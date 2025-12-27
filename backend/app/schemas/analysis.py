@@ -1,0 +1,217 @@
+from pydantic import BaseModel, Field
+
+
+class FeatureActivation(BaseModel):
+    id: int = Field(..., description="Feature index in the SAE")
+    activation: float = Field(..., description="Activation strength")
+
+
+class TokenActivations(BaseModel):
+    token: str = Field(..., description="The token string")
+    position: int = Field(..., description="Position in the sequence (0-indexed)")
+    top_features: list[FeatureActivation] = Field(
+        ..., description="Top-K active features for this token"
+    )
+
+
+class LayerActivations(BaseModel):
+    layer: int = Field(..., description="Transformer layer index")
+    hook_point: str = Field(..., description="Hook point name")
+    token_activations: list[TokenActivations] = Field(
+        ..., description="Activations per token"
+    )
+
+
+class AnalyzeRequest(BaseModel):
+    prompt: str = Field(..., min_length=1, description="Input text to analyze")
+    top_k: int = Field(default=50, ge=1, le=500, description="Number of top features per token")
+    include_bos: bool = Field(default=False, description="Include BOS token in analysis")
+
+
+class AnalyzeResponse(BaseModel):
+    prompt: str = Field(..., description="Original prompt")
+    tokens: list[str] = Field(..., description="Tokenized prompt")
+    layers: list[LayerActivations] = Field(..., description="Activations per layer")
+    model_name: str = Field(..., description="Model used for analysis")
+    sae_id: str = Field(..., description="SAE configuration used")
+
+
+class SteeringFeature(BaseModel):
+    feature_id: int = Field(..., ge=0, description="Feature index to steer")
+    coefficient: float = Field(..., ge=-5.0, le=5.0, description="Steering strength")
+
+
+class GenerateRequest(BaseModel):
+    prompt: str = Field(..., min_length=1, description="Input prompt")
+    steering: list[SteeringFeature] = Field(
+        default=[], description="Features to steer during generation"
+    )
+    max_tokens: int = Field(default=128, ge=1, le=512)
+    temperature: float = Field(default=0.7, ge=0.0, le=2.0)
+    include_baseline: bool = Field(
+        default=True, description="Also generate without steering for comparison"
+    )
+
+
+class GenerateResponse(BaseModel):
+    prompt: str
+    baseline_output: str | None = None
+    steered_output: str
+    steering_config: list[SteeringFeature]
+
+
+# ============================================================================
+# Multi-Layer Analysis Schemas
+# ============================================================================
+
+class MultiLayerAnalyzeRequest(BaseModel):
+    """Request for multi-layer SAE analysis."""
+    prompt: str = Field(..., min_length=1, description="Input text to analyze")
+    layers: list[int] = Field(
+        default=[17],
+        description="Layer indices to analyze (available: 9, 17, 22, 29 for Gemma-3-4B)"
+    )
+    top_k: int = Field(default=50, ge=1, le=500, description="Number of top features per token")
+    include_bos: bool = Field(default=False, description="Include BOS token in analysis")
+
+
+class MultiLayerAnalyzeResponse(BaseModel):
+    """Response for multi-layer analysis."""
+    prompt: str = Field(..., description="Original prompt")
+    tokens: list[str] = Field(..., description="Tokenized prompt")
+    layers: list[LayerActivations] = Field(..., description="Activations per analyzed layer")
+    model_name: str = Field(..., description="Model used for analysis")
+    sae_width: str = Field(..., description="SAE width used")
+    analyzed_layers: list[int] = Field(..., description="Layer indices that were analyzed")
+
+
+# ============================================================================
+# Batch Analysis Schemas
+# ============================================================================
+
+class BatchAnalyzeRequest(BaseModel):
+    """Request for batch prompt analysis."""
+    prompts: list[str] = Field(
+        ...,
+        min_length=1,
+        max_length=50,
+        description="List of prompts to analyze"
+    )
+    layers: list[int] = Field(
+        default=[17],
+        description="Layer indices to analyze"
+    )
+    top_k: int = Field(default=50, ge=1, le=500, description="Number of top features per token")
+    include_bos: bool = Field(default=False, description="Include BOS token in analysis")
+
+
+class PromptAnalysisResult(BaseModel):
+    """Analysis result for a single prompt within a batch."""
+    id: str = Field(..., description="Unique ID for this prompt result")
+    prompt: str = Field(..., description="Original prompt")
+    tokens: list[str] = Field(..., description="Tokenized prompt")
+    layers: list[LayerActivations] = Field(..., description="Activations per layer")
+    status: str = Field(default="success", description="'success' or 'error'")
+    error: str | None = Field(default=None, description="Error message if failed")
+
+
+class BatchAnalyzeResponse(BaseModel):
+    """Response for batch prompt analysis."""
+    results: list[PromptAnalysisResult] = Field(..., description="Analysis results per prompt")
+    model_name: str = Field(..., description="Model used for analysis")
+    sae_width: str = Field(..., description="SAE width used")
+    analyzed_layers: list[int] = Field(..., description="Layer indices analyzed")
+    total_prompts: int = Field(..., description="Total number of prompts processed")
+    successful: int = Field(..., description="Number of successful analyses")
+    failed: int = Field(..., description="Number of failed analyses")
+    processing_time_ms: float = Field(..., description="Total processing time in milliseconds")
+
+
+# ============================================================================
+# VRAM and SAE Management Schemas
+# ============================================================================
+
+class VRAMStatus(BaseModel):
+    """Current VRAM usage status."""
+    total_gb: float = Field(..., description="Total VRAM in GB")
+    allocated_gb: float = Field(..., description="Allocated VRAM in GB")
+    reserved_gb: float = Field(..., description="Reserved VRAM in GB")
+    free_gb: float = Field(..., description="Free VRAM in GB")
+    pressure: str = Field(..., description="Memory pressure level: low, moderate, high, critical")
+
+
+class SAEStatus(BaseModel):
+    """Status of a loaded SAE."""
+    layer: int = Field(..., description="Layer index")
+    width: str = Field(..., description="SAE width (16k, 65k, 262k, 1m)")
+    l0: str = Field(..., description="L0 regularization level")
+    sae_type: str = Field(..., description="SAE hook type")
+    sae_id: str = Field(..., description="Full SAE identifier")
+    size_mb: float = Field(..., description="Size in MB")
+    loaded_at: float = Field(..., description="Unix timestamp when loaded")
+    last_used: float = Field(..., description="Unix timestamp when last used")
+
+
+class SAERegistryStatus(BaseModel):
+    """Status of all loaded SAEs."""
+    loaded_count: int = Field(..., description="Number of loaded SAEs")
+    loaded_layers: list[int] = Field(..., description="List of loaded layer indices")
+    total_size_mb: float = Field(..., description="Total size of all SAEs in MB")
+    total_size_gb: float = Field(..., description="Total size of all SAEs in GB")
+    max_budget_gb: float = Field(..., description="Maximum allowed SAE memory budget")
+    entries: list[SAEStatus] = Field(default=[], description="Details of each loaded SAE")
+
+
+class SystemStatus(BaseModel):
+    """Combined system status including model, VRAM, and SAEs."""
+    model_loaded: bool = Field(..., description="Whether the main model is loaded")
+    model_name: str | None = Field(default=None, description="Name of loaded model")
+    vram: VRAMStatus = Field(..., description="VRAM status")
+    saes: SAERegistryStatus = Field(..., description="SAE registry status")
+    available_layers: list[int] = Field(
+        default=[9, 17, 22, 29],
+        description="Available layer indices for analysis"
+    )
+
+
+class PreflightRequest(BaseModel):
+    """Request to check if SAEs can be loaded."""
+    layers: list[int] = Field(..., description="Layers to check")
+    width: str = Field(default="65k", description="SAE width")
+
+
+class PreflightResponse(BaseModel):
+    """Response for preflight check."""
+    can_load: bool = Field(..., description="Whether all requested SAEs can be loaded")
+    layers_to_load: list[int] = Field(..., description="Layers that need to be loaded")
+    already_loaded: list[int] = Field(..., description="Layers already loaded")
+    bytes_needed: int = Field(..., description="Total bytes needed for new SAEs")
+    bytes_available: int = Field(..., description="Currently available bytes")
+    recommendation: str | None = Field(default=None, description="Recommendation if cannot load")
+
+
+class LoadSAERequest(BaseModel):
+    """Request to load SAEs for specific layers."""
+    layers: list[int] = Field(..., description="Layers to load SAEs for")
+    width: str = Field(default="65k", description="SAE width")
+
+
+class LoadSAEResponse(BaseModel):
+    """Response after loading SAEs."""
+    loaded: list[int] = Field(..., description="Layers successfully loaded")
+    already_loaded: list[int] = Field(..., description="Layers that were already loaded")
+    failed: list[dict] = Field(default=[], description="Layers that failed to load with errors")
+    vram_status: VRAMStatus = Field(..., description="Current VRAM status after loading")
+
+
+class UnloadSAERequest(BaseModel):
+    """Request to unload SAE for a specific layer."""
+    layer: int = Field(..., description="Layer to unload")
+    width: str = Field(default="65k", description="SAE width")
+
+
+class UnloadSAEResponse(BaseModel):
+    """Response after unloading SAE."""
+    success: bool = Field(..., description="Whether unload was successful")
+    layer: int = Field(..., description="Layer that was unloaded")
+    vram_status: VRAMStatus = Field(..., description="Current VRAM status after unloading")
