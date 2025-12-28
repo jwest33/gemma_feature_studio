@@ -2,10 +2,11 @@
   <h1>Gemma Feature Studio</h1>
   <p>Gemma-3 SAE Analysis and Steering System built with Gemma-Scope-2, SAE-Lens, and React.</p>
 
-  [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-  [![Gemma-Scope-2](https://img.shields.io/badge/Gemma--Scope--2-Google-blue.svg)](https://huggingface.co/google/gemma-scope-2)
+  [![Gemma-3](https://img.shields.io/badge/LLM-Gemma--3-mediumorchid.svg)](https://ai.google.dev/gemma/docs/core)
+  [![Gemma-Scope-2](https://img.shields.io/badge/SAE-Gemma--Scope--2-blue.svg)](https://huggingface.co/google/gemma-scope-2)
+  [![Neuronpedia](https://img.shields.io/badge/Feature_Analysis-Neuronpedia-cadetblue.svg)](https://www.neuronpedia.org/)
+  [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
 </div>
-
 
 ## Features
 

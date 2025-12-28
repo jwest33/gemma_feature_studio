@@ -13,8 +13,23 @@ import type {
   MultiLayerAnalyzeResponse,
   LoadSAEResponse,
   AVAILABLE_LAYERS,
+  ModelConfig,
+  SAEPreset,
 } from "@/types/flow";
-import type { LayerActivations } from "@/types/analysis";
+import { SAE_PRESETS } from "@/types/flow";
+import type { LayerActivations, NormalizationMode } from "@/types/analysis";
+
+// ============================================================================
+// Global Steering Types
+// ============================================================================
+
+export interface GlobalSteeringFeature {
+  id: number;
+  layer: number;
+  coefficient: number;
+  enabled: boolean;
+  name?: string; // From Neuronpedia description
+}
 
 // ============================================================================
 // Filter Types
@@ -41,6 +56,9 @@ export interface PanelConfig {
 // ============================================================================
 
 interface FlowState {
+  // Model Configuration
+  modelConfig: ModelConfig;
+
   // Prompts
   prompts: PromptAnalysis[];
   activePromptId: string | null;
@@ -54,6 +72,13 @@ interface FlowState {
   // Inspector Panel
   panelConfig: PanelConfig;
 
+  // Global Steering
+  steeringFeatures: GlobalSteeringFeature[];
+  steeringPanelExpanded: boolean;
+  steeringNormalization: NormalizationMode;
+  steeringClampFactor: number;
+  steeringUnitNormalize: boolean;
+
   // System Status
   systemStatus: SystemStatus | null;
   isLoadingStatus: boolean;
@@ -66,6 +91,11 @@ interface FlowState {
   // Selection State
   selection: FlowSelection;
   comparison: ComparisonSelection | null;
+
+  // Actions - Model Configuration
+  setModelPath: (path: string) => void;
+  setSaePreset: (presetId: string) => void;
+  getSaePreset: () => SAEPreset | undefined;
 
   // Actions - Prompts
   addPrompt: (text: string) => string;
@@ -107,6 +137,20 @@ interface FlowState {
   setMinTokenCount: (value: number) => void;
   resetFilters: () => void;
 
+  // Actions - Global Steering
+  addSteeringFeature: (id: number, layer: number, name?: string) => void;
+  removeSteeringFeature: (id: number, layer: number) => void;
+  updateSteeringFeature: (id: number, layer: number, updates: Partial<Omit<GlobalSteeringFeature, 'id' | 'layer'>>) => void;
+  setSteeringFeatures: (features: GlobalSteeringFeature[]) => void;
+  clearSteeringFeatures: () => void;
+  toggleSteeringPanel: () => void;
+  setSteeringPanelExpanded: (expanded: boolean) => void;
+  setSteeringNormalization: (mode: NormalizationMode) => void;
+  setSteeringClampFactor: (factor: number) => void;
+  setSteeringUnitNormalize: (value: boolean) => void;
+  hasSteeringFeature: (id: number, layer: number) => boolean;
+  getEnabledSteeringFeatures: () => GlobalSteeringFeature[];
+
   // Actions - Panel
   setPanelPosition: (position: PanelPosition) => void;
   setPanelSize: (size: number) => void;
@@ -134,6 +178,10 @@ export const useFlowStore = create<FlowState>()(
   persist(
     (set, get) => ({
       // Initial State
+      modelConfig: {
+        modelPath: "google/gemma-3-4b-it",
+        saePresetId: "gemmascope-2-res-65k",
+      },
       prompts: [],
       activePromptId: null,
       selectedLayers: [17], // Default to layer 17
@@ -145,6 +193,13 @@ export const useFlowStore = create<FlowState>()(
         position: "bottom",
         size: 288, // 72 * 4 = h-72 equivalent
       },
+      // Global Steering
+      steeringFeatures: [],
+      steeringPanelExpanded: false,
+      steeringNormalization: "preserve_norm" as NormalizationMode,
+      steeringClampFactor: 1.5,
+      steeringUnitNormalize: false,
+      // System Status
       systemStatus: null,
       isLoadingStatus: false,
       isAnalyzing: false,
@@ -157,6 +212,27 @@ export const useFlowStore = create<FlowState>()(
         showOutput: false,
       },
       comparison: null,
+
+      // ======================================================================
+      // Model Configuration Actions
+      // ======================================================================
+
+      setModelPath: (path: string) => {
+        set((state) => ({
+          modelConfig: { ...state.modelConfig, modelPath: path },
+        }));
+      },
+
+      setSaePreset: (presetId: string) => {
+        set((state) => ({
+          modelConfig: { ...state.modelConfig, saePresetId: presetId },
+        }));
+      },
+
+      getSaePreset: () => {
+        const { modelConfig } = get();
+        return SAE_PRESETS.find((p) => p.id === modelConfig.saePresetId);
+      },
 
       // ======================================================================
       // Prompt Actions
@@ -422,6 +498,87 @@ export const useFlowStore = create<FlowState>()(
       },
 
       // ======================================================================
+      // Global Steering Actions
+      // ======================================================================
+
+      addSteeringFeature: (id: number, layer: number, name?: string) => {
+        set((state) => {
+          // Check if feature already exists
+          const exists = state.steeringFeatures.some(
+            (f) => f.id === id && f.layer === layer
+          );
+          if (exists) return state;
+
+          const newFeature: GlobalSteeringFeature = {
+            id,
+            layer,
+            coefficient: 0,
+            enabled: true,
+            name,
+          };
+
+          return {
+            steeringFeatures: [...state.steeringFeatures, newFeature],
+            steeringPanelExpanded: true, // Auto-expand when adding
+          };
+        });
+      },
+
+      removeSteeringFeature: (id: number, layer: number) => {
+        set((state) => ({
+          steeringFeatures: state.steeringFeatures.filter(
+            (f) => !(f.id === id && f.layer === layer)
+          ),
+        }));
+      },
+
+      updateSteeringFeature: (id: number, layer: number, updates: Partial<Omit<GlobalSteeringFeature, 'id' | 'layer'>>) => {
+        set((state) => ({
+          steeringFeatures: state.steeringFeatures.map((f) =>
+            f.id === id && f.layer === layer ? { ...f, ...updates } : f
+          ),
+        }));
+      },
+
+      setSteeringFeatures: (features: GlobalSteeringFeature[]) => {
+        set({ steeringFeatures: features });
+      },
+
+      clearSteeringFeatures: () => {
+        set({ steeringFeatures: [] });
+      },
+
+      toggleSteeringPanel: () => {
+        set((state) => ({
+          steeringPanelExpanded: !state.steeringPanelExpanded,
+        }));
+      },
+
+      setSteeringPanelExpanded: (expanded: boolean) => {
+        set({ steeringPanelExpanded: expanded });
+      },
+
+      setSteeringNormalization: (mode: NormalizationMode) => {
+        set({ steeringNormalization: mode });
+      },
+
+      setSteeringClampFactor: (factor: number) => {
+        set({ steeringClampFactor: Math.max(1.0, Math.min(3.0, factor)) });
+      },
+
+      setSteeringUnitNormalize: (value: boolean) => {
+        set({ steeringUnitNormalize: value });
+      },
+
+      hasSteeringFeature: (id: number, layer: number) => {
+        return get().steeringFeatures.some((f) => f.id === id && f.layer === layer);
+      },
+
+      getEnabledSteeringFeatures: () => {
+        return get().steeringFeatures.filter((f) => f.enabled);
+      },
+
+      // ======================================================================
       // Panel Actions
       // ======================================================================
 
@@ -495,10 +652,15 @@ export const useFlowStore = create<FlowState>()(
       storage: createJSONStorage(() => localStorage),
       partialize: (state) => ({
         // Only persist these fields
+        modelConfig: state.modelConfig,
         selectedLayers: state.selectedLayers,
         filters: state.filters,
         panelConfig: state.panelConfig,
-        // Don't persist prompts or analysis results (too large)
+        // Persist steering settings (but not features - they're transient)
+        steeringNormalization: state.steeringNormalization,
+        steeringClampFactor: state.steeringClampFactor,
+        steeringUnitNormalize: state.steeringUnitNormalize,
+        // Don't persist prompts, analysis results, or steering features (too large/transient)
       }),
     }
   )
@@ -510,9 +672,17 @@ export const useFlowStore = create<FlowState>()(
 
 export const useActivePrompt = () => useFlowStore((state) => state.getActivePrompt());
 export const useSelectedLayers = () => useFlowStore((state) => state.selectedLayers);
+export const useModelConfig = () => useFlowStore((state) => state.modelConfig);
 export const useSystemStatus = () => useFlowStore((state) => state.systemStatus);
 export const useIsAnalyzing = () => useFlowStore((state) => state.isAnalyzing);
 export const useAnalysisProgress = () => useFlowStore((state) => state.analysisProgress);
 export const useSelection = () => useFlowStore((state) => state.selection);
 export const useFilters = () => useFlowStore((state) => state.filters);
 export const usePanelConfig = () => useFlowStore((state) => state.panelConfig);
+
+// Steering selectors
+export const useSteeringFeatures = () => useFlowStore((state) => state.steeringFeatures);
+export const useSteeringPanelExpanded = () => useFlowStore((state) => state.steeringPanelExpanded);
+export const useSteeringNormalization = () => useFlowStore((state) => state.steeringNormalization);
+export const useSteeringClampFactor = () => useFlowStore((state) => state.steeringClampFactor);
+export const useSteeringUnitNormalize = () => useFlowStore((state) => state.steeringUnitNormalize);

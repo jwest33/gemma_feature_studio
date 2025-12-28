@@ -1,6 +1,6 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from functools import lru_cache
 from pathlib import Path
+from typing import Optional
 
 # Get the backend directory (where .env should be)
 BACKEND_DIR = Path(__file__).resolve().parent.parent.parent
@@ -49,6 +49,71 @@ class Settings(BaseSettings):
     neuronpedia_model_id: str = "gemma-3-4b-it"
 
 
-@lru_cache
+# Runtime configuration state (allows dynamic updates without reloading settings)
+class RuntimeConfig:
+    """Mutable runtime configuration that can be updated via API."""
+
+    _instance: Optional["RuntimeConfig"] = None
+
+    def __init__(self):
+        # Initialize from settings
+        settings = Settings()
+        self.model_name: str = settings.model_name
+        self.sae_repo: str = settings.sae_repo
+        self.sae_width: str = settings.sae_width
+        self.sae_l0: str = settings.sae_l0
+        self.sae_type: str = settings.sae_type
+        self._previous_model_name: str = settings.model_name
+
+    @classmethod
+    def get_instance(cls) -> "RuntimeConfig":
+        if cls._instance is None:
+            cls._instance = RuntimeConfig()
+        return cls._instance
+
+    def update(
+        self,
+        model_name: str | None = None,
+        sae_repo: str | None = None,
+        sae_width: str | None = None,
+        sae_l0: str | None = None,
+        sae_type: str | None = None,
+    ) -> bool:
+        """
+        Update runtime configuration.
+
+        Returns True if model reload is needed (model_name changed).
+        """
+        self._previous_model_name = self.model_name
+
+        if model_name is not None:
+            self.model_name = model_name
+        if sae_repo is not None:
+            self.sae_repo = sae_repo
+        if sae_width is not None:
+            self.sae_width = sae_width
+        if sae_l0 is not None:
+            self.sae_l0 = sae_l0
+        if sae_type is not None:
+            self.sae_type = sae_type
+
+        return self._previous_model_name != self.model_name
+
+    def to_dict(self) -> dict:
+        return {
+            "model_name": self.model_name,
+            "sae_repo": self.sae_repo,
+            "sae_width": self.sae_width,
+            "sae_l0": self.sae_l0,
+            "sae_type": self.sae_type,
+        }
+
+
 def get_settings() -> Settings:
+    """Get base settings (from env/defaults)."""
     return Settings()
+
+
+def get_runtime_config() -> RuntimeConfig:
+    """Get runtime configuration (can be modified at runtime)."""
+    return RuntimeConfig.get_instance()

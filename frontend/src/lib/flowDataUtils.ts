@@ -87,8 +87,20 @@ export function deduplicateFeatures(
       feat.activations.length;
   });
 
-  // Sort by max activation (descending)
-  features.sort((a, b) => b.maxActivation - a.maxActivation);
+  // Sort by max activation (descending), with token count as tiebreaker
+  // Features with activations within 5% of each other use token count to break ties
+  features.sort((a, b) => {
+    const activationDiff = b.maxActivation - a.maxActivation;
+    const threshold = Math.max(a.maxActivation, b.maxActivation) * 0.05;
+
+    // If activations are significantly different, sort by activation
+    if (Math.abs(activationDiff) > threshold) {
+      return activationDiff;
+    }
+
+    // Otherwise, sort by number of tokens (more tokens = higher priority)
+    return b.activations.length - a.activations.length;
+  });
 
   // Calculate overall max for the layer
   const maxActivation = features.length > 0

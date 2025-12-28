@@ -23,6 +23,8 @@ import type {
   LoadSAEResponse,
   UnloadSAERequest,
   UnloadSAEResponse,
+  ConfigureModelRequest,
+  ConfigureModelResponse,
 } from "@/types/flow";
 
 const API_BASE = "/api";
@@ -268,4 +270,31 @@ export async function getNeuronpediaFeature(
     method: "POST",
     body: JSON.stringify(request),
   });
+}
+
+// =============================================================================
+// Model Configuration
+// =============================================================================
+
+export async function configureModel(
+  request: ConfigureModelRequest
+): Promise<ConfigureModelResponse> {
+  return fetchJson<ConfigureModelResponse>("/config", {
+    method: "POST",
+    body: JSON.stringify(request),
+  });
+}
+
+export async function getConfig(): Promise<{
+  config: {
+    model_name: string;
+    sae_repo: string;
+    sae_width: string;
+    sae_l0: string;
+    sae_type: string;
+  };
+  model_loaded: boolean;
+  loaded_layers: number[];
+}> {
+  return fetchJson("/config");
 }

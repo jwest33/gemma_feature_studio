@@ -6,6 +6,7 @@ import { useUndoableState } from "@/hooks/useUndoableState";
 
 export interface SteeringFeatureConfig {
   id: number;
+  layer?: number;
   name?: string;
   coefficient: number;
   enabled: boolean;
@@ -221,8 +222,9 @@ export function SteeringPanel({
         ) : (
           features.map((feature) => (
             <SteeringSlider
-              key={feature.id}
+              key={`${feature.id}-${feature.layer ?? 'global'}`}
               featureId={feature.id}
+              layer={feature.layer}
               featureName={feature.name}
               value={feature.coefficient}
               enabled={feature.enabled}

@@ -205,6 +205,51 @@ export interface ComparisonSelection {
 }
 
 // ============================================================================
+// Model Configuration Types
+// ============================================================================
+
+export interface SAEPreset {
+  id: string;
+  label: string;
+  repo: string;
+  width: string;
+  l0: string;
+  type: string;
+}
+
+export const SAE_PRESETS: SAEPreset[] = [
+  { id: "gemmascope-2-res-16k", label: "GemmaScope 2 Res 16k", repo: "google/gemma-scope-2-4b-it", width: "16k", l0: "medium", type: "resid_post" },
+  { id: "gemmascope-2-res-65k", label: "GemmaScope 2 Res 65k", repo: "google/gemma-scope-2-4b-it", width: "65k", l0: "medium", type: "resid_post" },
+  { id: "gemmascope-2-res-262k", label: "GemmaScope 2 Res 262k", repo: "google/gemma-scope-2-4b-it", width: "262k", l0: "medium", type: "resid_post" },
+  { id: "gemmascope-2-res-1m", label: "GemmaScope 2 Res 1M", repo: "google/gemma-scope-2-4b-it", width: "1m", l0: "medium", type: "resid_post" },
+];
+
+export interface ModelConfig {
+  modelPath: string;
+  saePresetId: string;
+}
+
+export interface ConfigureModelRequest {
+  model_name: string;
+  sae_repo: string;
+  sae_width: string;
+  sae_l0: string;
+  sae_type: string;
+}
+
+export interface ConfigureModelResponse {
+  status: string;
+  message: string;
+  config: {
+    model_name: string;
+    sae_repo: string;
+    sae_width: string;
+    sae_l0: string;
+    sae_type: string;
+  };
+}
+
+// ============================================================================
 // Helper Functions
 // ============================================================================
 

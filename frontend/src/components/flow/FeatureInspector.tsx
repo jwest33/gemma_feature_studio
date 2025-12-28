@@ -3,7 +3,6 @@
 import { useMemo, useState, useCallback, useEffect } from "react";
 import { useFlowStore } from "@/state/flowStore";
 import type { FeatureActivation, NeuronpediaFeatureResponse } from "@/types/analysis";
-import type { NormalizationMode } from "@/types/analysis";
 import { getNeuronpediaFeature } from "@/lib/api";
 
 // Full class names for Tailwind JIT - dynamic class construction doesn't work
@@ -18,38 +17,18 @@ function getLayerTextClass(layer: number): string {
   return LAYER_TEXT_CLASSES[layer] || "text-zinc-400";
 }
 
-export interface SteeringConfig {
-  featureId: number;
-  layer: number | null;
-  coefficient: number;
-  normalization: NormalizationMode;
-  normClampFactor: number;
-  unitNormalize: boolean;
-}
-
 interface FeatureInspectorProps {
-  onGenerateWithSteering?: (config: SteeringConfig) => void;
   generatedOutput?: string;
   baselineOutput?: string;
-  isGenerating?: boolean;
 }
 
 export function FeatureInspector({
-  onGenerateWithSteering,
   generatedOutput,
   baselineOutput,
-  isGenerating = false,
 }: FeatureInspectorProps) {
-  const { selection, selectedLayers, clearSelection } = useFlowStore();
+  const { selection, selectedLayers, clearSelection, addSteeringFeature, hasSteeringFeature } = useFlowStore();
   const activePrompt = useFlowStore((state) => state.getActivePrompt());
   const [copied, setCopied] = useState(false);
-
-  // Steering state
-  const [coefficient, setCoefficient] = useState(0);
-  const [normalization, setNormalization] = useState<NormalizationMode>("preserve_norm");
-  const [normClampFactor, setNormClampFactor] = useState(1.5);
-  const [unitNormalize, setUnitNormalize] = useState(false);
-  const [showAdvanced, setShowAdvanced] = useState(false);
 
   // Neuronpedia state
   const [neuronpediaData, setNeuronpediaData] = useState<NeuronpediaFeatureResponse | null>(null);
@@ -151,19 +130,23 @@ export function FeatureInspector({
     return featureData;
   }, [selection.featureId, activePrompt, selectedLayers]);
 
-  // Handle generate with steering
-  const handleGenerate = useCallback(() => {
-    if (selection.featureId === null || !onGenerateWithSteering) return;
+  // Check if feature is already in steering panel
+  const isFeatureInSteering = useMemo(() => {
+    if (selection.featureId === null || selection.layer === null) return false;
+    return hasSteeringFeature(selection.featureId, selection.layer);
+  }, [selection.featureId, selection.layer, hasSteeringFeature]);
 
-    onGenerateWithSteering({
-      featureId: selection.featureId,
-      layer: selection.layer,
-      coefficient,
-      normalization,
-      normClampFactor,
-      unitNormalize,
-    });
-  }, [selection.featureId, selection.layer, coefficient, normalization, normClampFactor, unitNormalize, onGenerateWithSteering]);
+  // Handle adding feature to steering panel
+  const handleAddToSteering = useCallback(() => {
+    if (selection.featureId === null || selection.layer === null) return;
+
+    // Use Neuronpedia description as the feature name if available
+    const name = neuronpediaData?.description
+      ? neuronpediaData.description.slice(0, 50) + (neuronpediaData.description.length > 50 ? "..." : "")
+      : undefined;
+
+    addSteeringFeature(selection.featureId, selection.layer, name);
+  }, [selection.featureId, selection.layer, neuronpediaData, addSteeringFeature]);
 
   if (!activePrompt) {
     return (
@@ -179,7 +162,7 @@ export function FeatureInspector({
         <div className="text-center">
           <p>Click on a token, feature, or output to inspect</p>
           <p className="text-xs mt-1 text-zinc-600">
-            Tokens show feature activations • Features show where they appear • Click a feature to steer
+            Tokens show feature activations • Features show where they appear • Add features to steering panel
           </p>
         </div>
       </div>
@@ -290,7 +273,7 @@ export function FeatureInspector({
               </div>
             ) : (
               <div className="text-zinc-500 text-sm italic">
-                No output generated yet. Select a feature and adjust the steering slider to generate.
+                No output generated yet. Add features to the steering panel above and click Generate.
               </div>
             )}
           </div>
@@ -338,157 +321,37 @@ export function FeatureInspector({
           </div>
         )}
 
-        {/* Feature Inspector with Steering Controls */}
+        {/* Feature Inspector */}
         {selection.featureId !== null && selectedFeatureData && (
           <div className="flex-1 flex flex-col min-h-0 space-y-4">
-            {/* Steering Controls */}
-            {onGenerateWithSteering && (
-              <div className="bg-zinc-800/50 rounded-lg p-4 border border-zinc-700 shrink-0">
-                <div className="flex items-center justify-between mb-3">
-                  <h4 className="text-sm font-medium text-white">Steer Feature #{selection.featureId}</h4>
-                  <button
-                    onClick={() => setShowAdvanced(!showAdvanced)}
-                    className="text-xs text-zinc-500 hover:text-zinc-300"
-                  >
-                    {showAdvanced ? "Hide Options" : "Show Options"}
-                  </button>
-                </div>
-
-                {/* Coefficient Slider */}
-                <div className="space-y-2 mb-4">
-                  <div className="flex items-center justify-between">
-                    <label className="text-xs text-zinc-400">Steering Coefficient</label>
-                    <span className="text-xs font-mono text-zinc-300">
-                      {coefficient > 0 ? "+" : ""}{coefficient.toFixed(2)}
-                    </span>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <input
-                      type="range"
-                      min="-2"
-                      max="2"
-                      step="0.01"
-                      value={coefficient}
-                      onChange={(e) => setCoefficient(parseFloat(e.target.value))}
-                      className="flex-1 h-2 bg-zinc-700 rounded-lg appearance-none cursor-pointer accent-blue-500"
-                    />
-                    <input
-                      type="number"
-                      min="-2"
-                      max="2"
-                      step="0.01"
-                      value={coefficient}
-                      onChange={(e) => {
-                        const val = parseFloat(e.target.value);
-                        if (!isNaN(val)) {
-                          setCoefficient(Math.max(-2, Math.min(2, val)));
-                        }
-                      }}
-                      className="w-16 px-2 py-1 text-xs font-mono text-center bg-zinc-800 border border-zinc-600 rounded text-white focus:outline-none focus:border-blue-500"
-                    />
-                  </div>
-                  <div className="flex justify-between text-xs text-zinc-500">
-                    <span>-2 (suppress)</span>
-                    <span>0</span>
-                    <span>+2 (amplify)</span>
-                  </div>
-                </div>
-
-                {/* Advanced Options */}
-                {showAdvanced && (
-                  <div className="space-y-3 mb-4 pt-3 border-t border-zinc-700">
-                    {/* Normalization Mode */}
-                    <div>
-                      <label className="text-xs text-zinc-400 block mb-1">Normalization Mode</label>
-                      <div className="flex gap-2">
-                        {(["preserve_norm", "clamp", "none"] as NormalizationMode[]).map((mode) => (
-                          <button
-                            key={mode}
-                            onClick={() => setNormalization(mode)}
-                            className={`px-2 py-1 text-xs rounded transition-colors ${
-                              normalization === mode
-                                ? "bg-blue-600 text-white"
-                                : "bg-zinc-700 text-zinc-300 hover:bg-zinc-600"
-                            }`}
-                          >
-                            {mode === "preserve_norm" ? "Preserve Norm" : mode === "clamp" ? "Clamp" : "None"}
-                          </button>
-                        ))}
-                      </div>
-                      <p className="text-xs text-zinc-500 mt-1">
-                        {normalization === "preserve_norm" && "Rescale to maintain original activation norm"}
-                        {normalization === "clamp" && "Allow bounded norm changes within a factor"}
-                        {normalization === "none" && "Raw steering without normalization"}
-                      </p>
-                    </div>
-
-                    {/* Clamp Factor (only shown when clamp mode is selected) */}
-                    {normalization === "clamp" && (
-                      <div>
-                        <div className="flex items-center justify-between">
-                          <label className="text-xs text-zinc-400">Clamp Factor</label>
-                          <span className="text-xs font-mono text-zinc-300">{normClampFactor.toFixed(1)}x</span>
-                        </div>
-                        <input
-                          type="range"
-                          min="1.0"
-                          max="3.0"
-                          step="0.1"
-                          value={normClampFactor}
-                          onChange={(e) => setNormClampFactor(parseFloat(e.target.value))}
-                          className="w-full h-2 bg-zinc-700 rounded-lg appearance-none cursor-pointer accent-blue-500"
-                        />
-                      </div>
-                    )}
-
-                    {/* Unit Normalize Toggle */}
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <label className="text-xs text-zinc-400">Unit Normalize Decoder</label>
-                        <p className="text-xs text-zinc-500">Normalize decoder vector to unit norm</p>
-                      </div>
-                      <button
-                        onClick={() => setUnitNormalize(!unitNormalize)}
-                        className={`w-10 h-5 rounded-full transition-colors ${
-                          unitNormalize ? "bg-blue-600" : "bg-zinc-600"
-                        }`}
-                      >
-                        <div
-                          className={`w-4 h-4 bg-white rounded-full transition-transform ${
-                            unitNormalize ? "translate-x-5" : "translate-x-0.5"
-                          }`}
-                        />
-                      </button>
-                    </div>
-                  </div>
+            {/* Add to Steering Button */}
+            <div className="shrink-0">
+              <button
+                onClick={handleAddToSteering}
+                disabled={isFeatureInSteering}
+                className={`w-full py-2.5 rounded-lg font-medium transition-colors flex items-center justify-center gap-2 ${
+                  isFeatureInSteering
+                    ? "bg-zinc-700 text-zinc-400 cursor-not-allowed"
+                    : "bg-blue-600 text-white hover:bg-blue-500"
+                }`}
+              >
+                {isFeatureInSteering ? (
+                  <>
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                    </svg>
+                    Added to Steering Panel
+                  </>
+                ) : (
+                  <>
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                    </svg>
+                    Add to Steering Panel
+                  </>
                 )}
-
-                {/* Generate Button */}
-                <button
-                  onClick={handleGenerate}
-                  disabled={isGenerating || coefficient === 0}
-                  className={`w-full py-2 rounded-lg font-medium transition-colors ${
-                    isGenerating
-                      ? "bg-blue-600/50 text-blue-200 cursor-wait"
-                      : coefficient === 0
-                      ? "bg-zinc-700 text-zinc-400 cursor-not-allowed"
-                      : "bg-blue-600 text-white hover:bg-blue-500"
-                  }`}
-                >
-                  {isGenerating ? (
-                    <span className="flex items-center justify-center gap-2">
-                      <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
-                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                      </svg>
-                      Generating...
-                    </span>
-                  ) : (
-                    `Generate with Steering (${coefficient > 0 ? "+" : ""}${coefficient.toFixed(2)})`
-                  )}
-                </button>
-              </div>
-            )}
+              </button>
+            </div>
 
             {/* Neuronpedia Feature Info */}
             <div className="bg-gradient-to-b from-zinc-800/80 to-zinc-800/40 rounded-lg p-4 border border-zinc-600 flex-1 min-h-0 flex flex-col overflow-hidden">

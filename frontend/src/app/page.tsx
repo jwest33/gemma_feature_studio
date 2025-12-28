@@ -1,10 +1,19 @@
 "use client";
 
-import { useState, useCallback, useRef } from "react";
-import { useFlowStore, usePanelConfig } from "@/state/flowStore";
-import { LayerSelector, VRAMMonitor, PromptManager } from "@/components/controls";
-import { FlowVisualization, FeatureInspector, ResizablePanel, type SteeringConfig } from "@/components/flow";
-import { analyzeMultiLayer, loadSAEs, generateTextStream } from "@/lib/api";
+import { useState, useCallback, useRef, useEffect } from "react";
+import {
+  useFlowStore,
+  usePanelConfig,
+  useSteeringFeatures,
+  useSteeringNormalization,
+  useSteeringClampFactor,
+  useSteeringUnitNormalize,
+} from "@/state/flowStore";
+import { LayerSelector, VRAMMonitor, PromptManager, ModelSelector } from "@/components/controls";
+import { FlowVisualization, FeatureInspector, ResizablePanel } from "@/components/flow";
+import { GlobalSteeringPanel } from "@/components/GlobalSteeringPanel";
+import { analyzeMultiLayer, loadSAEs, generateTextStream, configureModel, getConfig } from "@/lib/api";
+import { SAE_PRESETS } from "@/types/flow";
 import type { GenerateRequest } from "@/types/analysis";
 
 export default function Home() {
@@ -19,14 +28,38 @@ export default function Home() {
     setAnalysisError,
     updatePromptAnalysis,
     selectOutput,
+    modelConfig,
+    getSaePreset,
+    setModelPath,
   } = useFlowStore();
 
   const activePrompt = useFlowStore((state) => state.getActivePrompt());
   const panelConfig = usePanelConfig();
+  const [isConfiguring, setIsConfiguring] = useState(false);
+
+  // Global steering state
+  const steeringFeatures = useSteeringFeatures();
+  const steeringNormalization = useSteeringNormalization();
+  const steeringClampFactor = useSteeringClampFactor();
+  const steeringUnitNormalize = useSteeringUnitNormalize();
+
   const [generatedOutput, setGeneratedOutput] = useState<string | undefined>();
   const [baselineOutput, setBaselineOutput] = useState<string | undefined>();
   const [isGenerating, setIsGenerating] = useState(false);
   const abortControllerRef = useRef<AbortController | null>(null);
+
+  // Fetch backend config on mount to sync model path from .env
+  useEffect(() => {
+    getConfig()
+      .then((config) => {
+        if (config.config.model_name) {
+          setModelPath(config.config.model_name);
+        }
+      })
+      .catch((err) => {
+        console.error("Failed to fetch backend config:", err);
+      });
+  }, [setModelPath]);
 
   // Generate LLM response for a prompt (no steering)
   const generateResponse = useCallback(async (promptText: string) => {
@@ -59,9 +92,16 @@ export default function Home() {
     }
   }, []);
 
-  // Generate with steering for comparison
-  const handleGenerateWithSteering = useCallback(async (config: SteeringConfig) => {
+  // Generate with steering for comparison (uses global steering state)
+  const handleGenerateWithSteering = useCallback(async () => {
     if (!activePrompt) return;
+
+    // Get enabled features with non-zero coefficients
+    const enabledFeatures = steeringFeatures.filter(
+      (f) => f.enabled && f.coefficient !== 0
+    );
+
+    if (enabledFeatures.length === 0) return;
 
     // Cancel any existing generation
     if (abortControllerRef.current) {
@@ -93,19 +133,19 @@ export default function Home() {
         setBaselineOutput(baseline);
       }
 
-      // Then generate steered output
+      // Then generate steered output with all enabled features
       let steered = "";
       const steeredRequest: GenerateRequest = {
         prompt: promptText,
-        steering: [{
-          feature_id: config.featureId,
-          coefficient: config.coefficient,
-          layer: config.layer,
-        }],
+        steering: enabledFeatures.map((f) => ({
+          feature_id: f.id,
+          coefficient: f.coefficient,
+          layer: f.layer,
+        })),
         max_tokens: 256,
-        normalization: config.normalization,
-        norm_clamp_factor: config.normClampFactor,
-        unit_normalize: config.unitNormalize,
+        normalization: steeringNormalization,
+        norm_clamp_factor: steeringClampFactor,
+        unit_normalize: steeringUnitNormalize,
       };
 
       for await (const token of generateTextStream(
@@ -127,7 +167,29 @@ export default function Home() {
       setIsGenerating(false);
       abortControllerRef.current = null;
     }
-  }, [activePrompt, selectOutput]);
+  }, [activePrompt, steeringFeatures, steeringNormalization, steeringClampFactor, steeringUnitNormalize, selectOutput]);
+
+  // Handle model configuration changes
+  const handleConfigChange = useCallback(async () => {
+    setIsConfiguring(true);
+    try {
+      const preset = getSaePreset();
+      if (!preset) return;
+
+      await configureModel({
+        model_name: modelConfig.modelPath,
+        sae_repo: preset.repo,
+        sae_width: preset.width,
+        sae_l0: preset.l0,
+        sae_type: preset.type,
+      });
+    } catch (e) {
+      console.error("Failed to configure model:", e);
+      setAnalysisError((e as Error).message);
+    } finally {
+      setIsConfiguring(false);
+    }
+  }, [modelConfig, getSaePreset, setAnalysisError]);
 
   // Analyze all prompts
   const handleAnalyze = useCallback(async () => {
@@ -139,7 +201,19 @@ export default function Home() {
     setBaselineOutput(undefined);
 
     try {
-      // First, ensure SAEs are loaded for selected layers
+      // First, ensure model config is applied
+      const preset = getSaePreset();
+      if (preset) {
+        await configureModel({
+          model_name: modelConfig.modelPath,
+          sae_repo: preset.repo,
+          sae_width: preset.width,
+          sae_l0: preset.l0,
+          sae_type: preset.type,
+        });
+      }
+
+      // Then, ensure SAEs are loaded for selected layers
       await loadSAEs({ layers: selectedLayers });
 
       // Analyze each prompt
@@ -174,6 +248,8 @@ export default function Home() {
     setAnalysisProgress,
     updatePromptAnalysis,
     generateResponse,
+    modelConfig,
+    getSaePreset,
   ]);
 
   return (
@@ -182,12 +258,19 @@ export default function Home() {
       <header className="border-b border-zinc-800 shrink-0">
         <div className="px-6 py-4 flex items-center justify-between">
           <div>
-            <h1 className="text-xl font-bold text-white">Gemma Feature Studio</h1>
+            <h1 className="text-xl font-bold text-white">LM Feature Studio</h1>
             <p className="text-sm text-zinc-500">
               Multi-Layer SAE Analysis and Feature Steering
             </p>
           </div>
           <VRAMMonitor compact />
+        </div>
+        {/* Model Configuration */}
+        <div className="px-6 pb-4 border-t border-zinc-800/50 pt-3">
+          <ModelSelector
+            disabled={isAnalyzing || isConfiguring}
+            onConfigChange={handleConfigChange}
+          />
         </div>
       </header>
 
@@ -272,6 +355,13 @@ export default function Home() {
         </div>
       )}
 
+      {/* Global Steering Panel */}
+      <GlobalSteeringPanel
+        onGenerate={handleGenerateWithSteering}
+        isGenerating={isGenerating}
+        disabled={!activePrompt}
+      />
+
       {/* Main Content Area - Visualization + Inspector Panel */}
       <div className={`flex-1 overflow-hidden min-h-0 flex ${panelConfig.position === "right" ? "flex-row" : "flex-col"}`}>
         {/* Flow Visualization */}
@@ -286,10 +376,8 @@ export default function Home() {
         {/* Feature Inspector Panel */}
         <ResizablePanel>
           <FeatureInspector
-            onGenerateWithSteering={handleGenerateWithSteering}
             generatedOutput={generatedOutput}
             baselineOutput={baselineOutput}
-            isGenerating={isGenerating}
           />
         </ResizablePanel>
       </div>

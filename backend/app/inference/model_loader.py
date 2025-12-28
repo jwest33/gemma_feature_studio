@@ -7,7 +7,7 @@ from contextlib import contextmanager
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from huggingface_hub import hf_hub_download
 from safetensors.torch import load_file
-from app.core.config import get_settings
+from app.core.config import get_settings, get_runtime_config
 from app.inference.vram_monitor import VRAMMonitor
 from app.inference.sae_registry import SAERegistry, SAEEntry
 
@@ -96,28 +96,32 @@ class ModelManager:
             return
 
         settings = get_settings()
+        runtime_config = get_runtime_config()
         device = settings.device
         dtype = torch.float32 if settings.dtype == "float32" else torch.bfloat16
 
-        print(f"Loading tokenizer: {settings.model_name}")
-        self._tokenizer = AutoTokenizer.from_pretrained(settings.model_name)
+        # Use runtime config for model name (allows dynamic changes)
+        model_name = runtime_config.model_name
 
-        print(f"Loading model: {settings.model_name}")
+        print(f"Loading tokenizer: {model_name}")
+        self._tokenizer = AutoTokenizer.from_pretrained(model_name)
+
+        print(f"Loading model: {model_name}")
         self._model = AutoModelForCausalLM.from_pretrained(
-            settings.model_name,
+            model_name,
             torch_dtype=dtype,
             device_map=device,
             trust_remote_code=True,
         )
         self._model.eval()
 
-        # Build the SAE path
-        sae_subdir = f"{settings.sae_type}/layer_{settings.sae_layer}_width_{settings.sae_width}_l0_{settings.sae_l0}"
+        # Build the SAE path using runtime config
+        sae_subdir = f"{runtime_config.sae_type}/layer_{settings.sae_layer}_width_{runtime_config.sae_width}_l0_{runtime_config.sae_l0}"
         sae_filename = f"{sae_subdir}/params.safetensors"
 
-        print(f"Loading SAE from: {settings.sae_repo}/{sae_filename}")
+        print(f"Loading SAE from: {runtime_config.sae_repo}/{sae_filename}")
         path_to_params = hf_hub_download(
-            repo_id=settings.sae_repo,
+            repo_id=runtime_config.sae_repo,
             filename=sae_filename,
         )
 
@@ -131,7 +135,7 @@ class ModelManager:
 
         self._initialized = True
         print("Model and SAE loaded successfully")
-        print(f"  Model: {settings.model_name}")
+        print(f"  Model: {model_name}")
         print(f"  SAE: {sae_subdir}")
         print(f"  SAE width: {d_sae}")
 
@@ -166,13 +170,13 @@ class ModelManager:
 
     def get_system_status(self) -> dict:
         """Get complete system status including model and SAEs."""
-        settings = get_settings()
+        runtime_config = get_runtime_config()
         vram = self.get_vram_status()
         sae_status = self._sae_registry.get_status() if self._sae_registry else {}
 
         return {
             "model_loaded": self._initialized,
-            "model_name": settings.model_name if self._initialized else None,
+            "model_name": runtime_config.model_name if self._initialized else None,
             "vram": vram,
             "saes": sae_status,
             "available_layers": AVAILABLE_LAYERS,
@@ -185,6 +189,7 @@ class ModelManager:
         Returns dict with can_load, bytes_needed, bytes_available, etc.
         """
         settings = get_settings()
+        runtime_config = get_runtime_config()
         dtype = torch.float32 if settings.dtype == "float32" else torch.bfloat16
 
         # Calculate bytes needed for new SAEs (not already loaded)
@@ -195,7 +200,7 @@ class ModelManager:
         for layer in layers:
             if layer not in AVAILABLE_LAYERS:
                 continue
-            if self._sae_registry.is_loaded(layer, width, settings.sae_l0, settings.sae_type):
+            if self._sae_registry.is_loaded(layer, width, runtime_config.sae_l0, runtime_config.sae_type):
                 already_loaded.append(layer)
             else:
                 bytes_needed += self._vram_monitor.estimate_sae_size(width, dtype)
@@ -240,9 +245,9 @@ class ModelManager:
 
         Args:
             layer: Layer index (must be in AVAILABLE_LAYERS)
-            width: SAE width (defaults to settings)
-            l0: L0 regularization level (defaults to settings)
-            sae_type: Hook type (defaults to settings)
+            width: SAE width (defaults to runtime config)
+            l0: L0 regularization level (defaults to runtime config)
+            sae_type: Hook type (defaults to runtime config)
 
         Returns:
             SAEEntry for the loaded SAE
@@ -255,9 +260,10 @@ class ModelManager:
             raise ValueError(f"Layer {layer} not available. Choose from {AVAILABLE_LAYERS}")
 
         settings = get_settings()
-        width = width or settings.sae_width
-        l0 = l0 or settings.sae_l0
-        sae_type = sae_type or settings.sae_type
+        runtime_config = get_runtime_config()
+        width = width or runtime_config.sae_width
+        l0 = l0 or runtime_config.sae_l0
+        sae_type = sae_type or runtime_config.sae_type
         device = settings.device
         dtype = torch.float32 if settings.dtype == "float32" else torch.bfloat16
 
@@ -281,13 +287,13 @@ class ModelManager:
                     f"have {snapshot.free_gb:.2f}GB free."
                 )
 
-        # Build SAE path and download
+        # Build SAE path and download using runtime config
         sae_subdir = f"{sae_type}/layer_{layer}_width_{width}_l0_{l0}"
         sae_filename = f"{sae_subdir}/params.safetensors"
 
-        print(f"Loading SAE: {settings.sae_repo}/{sae_filename}")
+        print(f"Loading SAE: {runtime_config.sae_repo}/{sae_filename}")
         path_to_params = hf_hub_download(
-            repo_id=settings.sae_repo,
+            repo_id=runtime_config.sae_repo,
             filename=sae_filename,
         )
 
@@ -321,13 +327,13 @@ class ModelManager:
 
         Args:
             layers: List of layer indices
-            width: SAE width (defaults to settings)
+            width: SAE width (defaults to runtime config)
 
         Returns:
             Dict with loaded, already_loaded, failed, and vram_status
         """
-        settings = get_settings()
-        width = width or settings.sae_width
+        runtime_config = get_runtime_config()
+        width = width or runtime_config.sae_width
 
         # Pre-flight check
         check = self.preflight_check(layers, width)
@@ -354,9 +360,9 @@ class ModelManager:
 
     def unload_sae_for_layer(self, layer: int, width: str = None) -> bool:
         """Unload SAE for a specific layer."""
-        settings = get_settings()
-        width = width or settings.sae_width
-        return self._sae_registry.unload(layer, width, settings.sae_l0, settings.sae_type)
+        runtime_config = get_runtime_config()
+        width = width or runtime_config.sae_width
+        return self._sae_registry.unload(layer, width, runtime_config.sae_l0, runtime_config.sae_type)
 
     def get_sae_for_layer(self, layer: int) -> Optional[JumpReLUSAE]:
         """Get the loaded SAE for a specific layer."""
@@ -419,6 +425,11 @@ class ModelManager:
         """
         Get top-k SAE feature activations for each token across multiple layers.
 
+        Uses sequential SAE processing to support limited VRAM scenarios where
+        only one SAE can be loaded at a time. The forward pass captures raw
+        activations for all layers, then each layer is processed sequentially
+        with its SAE loaded on-demand.
+
         Args:
             text: Input text
             layers: List of layer indices to analyze
@@ -430,29 +441,47 @@ class ModelManager:
         settings = get_settings()
         device = settings.device
 
-        # Ensure SAEs are loaded for all requested layers
-        for layer in layers:
-            if self.get_sae_for_layer(layer) is None:
-                self.load_sae_for_layer(layer)
-
         # Tokenize
         token_strs = self.tokenize(text)
         input_ids = self.get_token_ids(text).to(device)
 
-        # Run forward pass and capture activations at all layers
+        # Run forward pass ONCE and capture raw activations at all layers
+        # This is done before loading any SAEs to minimize peak VRAM usage
         with self.capture_activations_multi(layers) as cache:
             with torch.no_grad():
                 self._model(input_ids)
 
-        # Process each layer
+        # Clone and cache raw residuals - these stay in memory while we
+        # sequentially load/unload SAEs for each layer
+        residual_cache = {}
+        for layer in layers:
+            if cache[layer] is not None:
+                residual_cache[layer] = cache[layer].clone()
+
+        # Process each layer SEQUENTIALLY
+        # This allows the app to work with limited VRAM (LLM + 1 SAE)
+        # by loading each SAE on-demand and letting LRU eviction free space
         layer_results = {}
         for layer in layers:
-            residual = cache[layer]  # [1, seq_len, d_model]
-            sae = self.get_sae_for_layer(layer)
-
-            if sae is None:
+            if layer not in residual_cache:
+                print(f"Warning: No cached residual for layer {layer}, skipping")
                 continue
 
+            residual = residual_cache[layer]  # [1, seq_len, d_model]
+
+            # Load SAE for this layer (LRU eviction will free space if needed)
+            try:
+                self.load_sae_for_layer(layer)
+            except MemoryError as e:
+                print(f"Failed to load SAE for layer {layer}: {e}")
+                continue
+
+            sae = self.get_sae_for_layer(layer)
+            if sae is None:
+                print(f"Warning: SAE for layer {layer} not available after load")
+                continue
+
+            # Encode with SAE
             with torch.no_grad():
                 sae_features = sae.encode(residual.to(torch.float32))
 
@@ -476,6 +505,10 @@ class ModelManager:
                 })
 
             layer_results[layer] = token_activations
+
+        # Clean up residual cache
+        del residual_cache
+        torch.cuda.empty_cache()
 
         return {
             'tokens': token_strs,

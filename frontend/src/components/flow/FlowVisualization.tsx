@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useRef, useState, useCallback, useEffect, useLayoutEffect } from "react";
+import { useMemo, useRef, useState, useCallback, useEffect } from "react";
 import { useFlowStore, type FlowFilters } from "@/state/flowStore";
 import type { LayerActivations } from "@/types/analysis";
 import { createActivationScale, getContrastColor } from "@/lib/colorScale";
@@ -73,6 +73,9 @@ interface FlowLinesProps {
   hoveredToken: number | null;
   hoveredFeature: { id: number; layer: number } | null;
   maxActivation: number;
+  outputX: number;
+  outputHeight: number;
+  showOutputSelected: boolean;
 }
 
 function FlowLines({
@@ -85,11 +88,28 @@ function FlowLines({
   hoveredToken,
   hoveredFeature,
   maxActivation,
+  outputX,
+  outputHeight,
+  showOutputSelected,
 }: FlowLinesProps) {
   const lines: JSX.Element[] = [];
 
   // Sort layers for sequential connections
   const sortedLayers = [...layerFlowData].sort((a, b) => a.layer - b.layer);
+
+  // Helper to calculate stroke width based on activation strength
+  const getActivationStrokeWidth = (activation: number, isHighlighted: boolean): number => {
+    const normalized = Math.min(1, activation / maxActivation);
+    const baseWidth = 0.5 + normalized * 2; // Range: 0.5 to 2.5
+    return isHighlighted ? baseWidth + 1 : baseWidth;
+  };
+
+  // Helper to calculate opacity based on activation strength
+  const getActivationOpacity = (activation: number, isHighlighted: boolean): number => {
+    const normalized = Math.min(1, activation / maxActivation);
+    const baseOpacity = 0.1 + normalized * 0.25; // Range: 0.1 to 0.35
+    return isHighlighted ? Math.min(0.9, baseOpacity + 0.4) : baseOpacity;
+  };
 
   // Draw token-to-feature connections for the first layer
   if (sortedLayers.length > 0) {
@@ -112,8 +132,8 @@ function FlowLines({
           (selectedTokenIndex !== null && selectedTokenIndex === activation.tokenIndex) ||
           (selectedFeatureId !== null && selectedFeatureId === feature.featureId);
 
-        const opacity = isHighlighted ? 0.8 : 0.15;
-        const strokeWidth = isHighlighted ? 2 : 1;
+        const opacity = getActivationOpacity(activation.activation, isHighlighted);
+        const strokeWidth = getActivationStrokeWidth(activation.activation, isHighlighted);
         const color = LAYER_HEX_COLORS[firstLayer.layer] || "#888";
 
         // Bezier curve from token to feature
@@ -172,8 +192,10 @@ function FlowLines({
         (selectedFeatureId !== null && selectedFeatureId === currentFeature.featureId) ||
         (hoveredFeature !== null && hoveredFeature.id === currentFeature.featureId);
 
-      const opacity = isHighlighted ? 0.9 : 0.2;
-      const strokeWidth = isHighlighted ? 2.5 : 1.5;
+      // Use the average of both layer activations for cross-layer line strength
+      const avgActivation = (currentFeature.maxActivation + nextFeature.maxActivation) / 2;
+      const opacity = getActivationOpacity(avgActivation, isHighlighted);
+      const strokeWidth = getActivationStrokeWidth(avgActivation, isHighlighted);
 
       // Gradient from current layer color to next layer color
       const gradientId = `gradient-${currentLayer.layer}-${nextLayer.layer}-${currentFeature.featureId}`;
@@ -235,8 +257,11 @@ function FlowLines({
           (selectedTokenIndex !== null && selectedTokenIndex === activation.tokenIndex) ||
           (selectedFeatureId !== null && selectedFeatureId === feature.featureId);
 
-        const opacity = isHighlighted ? 0.7 : 0.1;
-        const strokeWidth = isHighlighted ? 1.5 : 0.5;
+        // Slightly reduce stroke for dashed lines since they're secondary connections
+        const baseOpacity = getActivationOpacity(activation.activation, isHighlighted);
+        const baseStroke = getActivationStrokeWidth(activation.activation, isHighlighted);
+        const opacity = baseOpacity * 0.7; // Reduce opacity for dashed lines
+        const strokeWidth = baseStroke * 0.8;
         const color = LAYER_HEX_COLORS[currentLayer.layer] || "#888";
 
         // Curved line from token to feature
@@ -263,6 +288,52 @@ function FlowLines({
     });
   }
 
+  // Draw connections from last layer features to output panel
+  if (sortedLayers.length > 0) {
+    const lastLayer = sortedLayers[sortedLayers.length - 1];
+    const featureCount = lastLayer.features.length;
+
+    lastLayer.features.forEach((feature, index) => {
+      const featureKey = `${lastLayer.layer}-${feature.featureId}`;
+      const featurePos = featurePositions.get(featureKey);
+      if (!featurePos) return;
+
+      const isHighlighted =
+        showOutputSelected ||
+        (hoveredFeature !== null &&
+          hoveredFeature.id === feature.featureId &&
+          hoveredFeature.layer === lastLayer.layer) ||
+        (selectedFeatureId !== null && selectedFeatureId === feature.featureId);
+
+      const opacity = getActivationOpacity(feature.maxActivation, isHighlighted);
+      const strokeWidth = getActivationStrokeWidth(feature.maxActivation, isHighlighted);
+
+      // Calculate output Y position to distribute connections evenly
+      const outputY = LAYOUT.padding + LAYOUT.headerHeight +
+        ((index + 0.5) / Math.max(1, featureCount)) * (outputHeight - LAYOUT.headerHeight - 20);
+
+      // Bezier curve from feature to output
+      const x1 = featurePos.x + LAYOUT.layerColumnWidth;
+      const y1 = featurePos.y + LAYOUT.featureHeight / 2;
+      const x2 = outputX;
+      const y2 = outputY;
+      const cx1 = x1 + (x2 - x1) * 0.4;
+      const cx2 = x2 - (x2 - x1) * 0.4;
+
+      lines.push(
+        <path
+          key={`feature-${featureKey}-to-output`}
+          d={`M ${x1} ${y1} C ${cx1} ${y1}, ${cx2} ${y2}, ${x2} ${y2}`}
+          fill="none"
+          stroke="#22c55e"
+          strokeWidth={strokeWidth}
+          opacity={opacity}
+          className="transition-opacity duration-150"
+        />
+      );
+    });
+  }
+
   return <g>{lines}</g>;
 }
 
@@ -277,6 +348,8 @@ interface TokenNodeProps {
   y: number;
   isSelected: boolean;
   isHovered: boolean;
+  featureActivation: number | null; // Activation value when a feature is selected
+  maxActivation: number;
   onSelect: () => void;
   onHover: (hovered: boolean) => void;
 }
@@ -288,10 +361,46 @@ function TokenNode({
   y,
   isSelected,
   isHovered,
+  featureActivation,
+  maxActivation,
   onSelect,
   onHover,
 }: TokenNodeProps) {
   const displayToken = token.replace(/ /g, "\u00B7");
+
+  // Calculate activation-based styling when a feature is selected
+  const colorScale = useMemo(() => createActivationScale(maxActivation), [maxActivation]);
+  const hasFeatureActivation = featureActivation !== null && featureActivation > 0;
+
+  // Determine fill and stroke colors
+  let fill: string;
+  let stroke: string;
+  let strokeWidth: number;
+  let textColor: string;
+
+  if (isSelected) {
+    fill = "rgba(59, 130, 246, 0.3)";
+    stroke = "#3b82f6";
+    strokeWidth = 2;
+    textColor = "#e4e4e7"; // zinc-200
+  } else if (hasFeatureActivation) {
+    fill = colorScale(featureActivation);
+    stroke = "rgba(255, 255, 255, 0.4)";
+    strokeWidth = 1.5;
+    textColor = getContrastColor(fill);
+  } else if (featureActivation === null) {
+    // No feature selected
+    fill = isHovered ? "rgba(255, 255, 255, 0.1)" : "rgba(39, 39, 42, 0.8)";
+    stroke = "rgba(63, 63, 70, 0.8)";
+    strokeWidth = 1;
+    textColor = "#e4e4e7"; // zinc-200
+  } else {
+    // Feature selected but this token doesn't activate it
+    fill = "rgba(39, 39, 42, 0.4)";
+    stroke = "rgba(63, 63, 70, 0.4)";
+    strokeWidth = 1;
+    textColor = "#71717a"; // zinc-500 - dimmed
+  }
 
   return (
     <g
@@ -307,16 +416,17 @@ function TokenNode({
         width={LAYOUT.tokenColumnWidth}
         height={LAYOUT.tokenHeight}
         rx={4}
-        fill={isSelected ? "rgba(59, 130, 246, 0.3)" : isHovered ? "rgba(255, 255, 255, 0.1)" : "rgba(39, 39, 42, 0.8)"}
-        stroke={isSelected ? "#3b82f6" : "rgba(63, 63, 70, 0.8)"}
-        strokeWidth={isSelected ? 2 : 1}
+        fill={fill}
+        stroke={stroke}
+        strokeWidth={strokeWidth}
         className="transition-all duration-150"
       />
       <text
         x={8}
         y={LAYOUT.tokenHeight / 2}
         dominantBaseline="middle"
-        className="text-[10px] fill-zinc-500 font-mono"
+        fill={featureActivation === 0 ? "#52525b" : "#71717a"}
+        className="text-[10px] font-mono"
       >
         {index}
       </text>
@@ -324,10 +434,23 @@ function TokenNode({
         x={28}
         y={LAYOUT.tokenHeight / 2}
         dominantBaseline="middle"
-        className="text-xs fill-zinc-200 font-mono"
+        fill={textColor}
+        className="text-xs font-mono"
       >
         {displayToken.length > 8 ? displayToken.slice(0, 8) + "..." : displayToken}
       </text>
+      {hasFeatureActivation && (
+        <text
+          x={LAYOUT.tokenColumnWidth - 6}
+          y={LAYOUT.tokenHeight / 2}
+          dominantBaseline="middle"
+          textAnchor="end"
+          fill={textColor}
+          className="text-[9px] font-mono opacity-80"
+        >
+          {featureActivation.toFixed(2)}
+        </text>
+      )}
     </g>
   );
 }
@@ -692,23 +815,36 @@ export function FlowVisualization({ generatedOutput, baselineOutput, isGeneratin
     return data.sort((a, b) => a.layer - b.layer);
   }, [layerDataMap, selectedLayers]);
 
+  // Compute unfiltered global max for filter slider range
+  const unfilteredGlobalMaxActivation = useMemo(() => {
+    return Math.max(1, ...unfilteredLayerFlowData.map((l) => l.maxActivation));
+  }, [unfilteredLayerFlowData]);
+
   // Apply filters to layer flow data
+  // NOTE: minActivation filter is applied as a PERCENTAGE of each layer's max activation
+  // This handles the fact that early layers (like 9) have much smaller activation scales
   const layerFlowData = useMemo(() => {
-    return unfilteredLayerFlowData.map((layer) => ({
-      ...layer,
-      features: layer.features.filter((feature) => {
-        // Filter by minimum activation strength
-        if (feature.maxActivation < filters.minActivation) {
-          return false;
-        }
-        // Filter by minimum token count
-        if (feature.activations.length < filters.minTokenCount) {
-          return false;
-        }
-        return true;
-      }),
-    }));
-  }, [unfilteredLayerFlowData, filters]);
+    const filtered = unfilteredLayerFlowData.map((layer) => {
+      // Calculate layer-specific threshold as percentage of that layer's max
+      const layerThreshold = (filters.minActivation / unfilteredGlobalMaxActivation) * layer.maxActivation;
+
+      return {
+        ...layer,
+        features: layer.features.filter((feature) => {
+          // Filter by minimum activation strength (relative to layer's scale)
+          if (feature.maxActivation < layerThreshold) {
+            return false;
+          }
+          // Filter by minimum token count
+          if (feature.activations.length < filters.minTokenCount) {
+            return false;
+          }
+          return true;
+        }),
+      };
+    });
+    return filtered;
+  }, [unfilteredLayerFlowData, filters, unfilteredGlobalMaxActivation]);
 
   // Count total and visible features for filter UI
   const featureCounts = useMemo(() => {
@@ -777,6 +913,25 @@ export function FlowVisualization({ generatedOutput, baselineOutput, isGeneratin
     ? LAYOUT.outputColumnWidthComparison
     : LAYOUT.outputColumnWidth;
 
+  // Estimate output panel height based on text content
+  const estimatedOutputHeight = useMemo(() => {
+    const output = generatedOutput || "";
+    const baseline = baselineOutput || "";
+    const longerText = output.length > baseline.length ? output : baseline;
+
+    if (!longerText) return 150; // Minimum height when no content
+
+    // Estimate characters per line based on panel width (~30 chars for single, ~25 for comparison)
+    const charsPerLine = hasComparison ? 25 : 30;
+    const lineHeight = 20; // Approximate line height in pixels
+    const headerHeight = 40; // Header + padding
+
+    const estimatedLines = Math.ceil(longerText.length / charsPerLine);
+    const textHeight = estimatedLines * lineHeight;
+
+    return Math.max(150, textHeight + headerHeight + 32); // Add padding
+  }, [generatedOutput, baselineOutput, hasComparison]);
+
   // Calculate SVG dimensions
   const svgDimensions = useMemo(() => {
     const sortedLayers = [...selectedLayers].sort((a, b) => a - b);
@@ -789,16 +944,17 @@ export function FlowVisualization({ generatedOutput, baselineOutput, isGeneratin
       sortedLayers.length * (LAYOUT.layerColumnWidth + LAYOUT.layerGap) +
       outputPanelWidth;
 
-    const height =
+    const contentHeight =
       LAYOUT.headerHeight +
       LAYOUT.padding * 2 +
       Math.max(
         tokens.length * (LAYOUT.tokenHeight + LAYOUT.tokenGap),
-        maxFeatures * (LAYOUT.featureHeight + LAYOUT.featureGap)
+        maxFeatures * (LAYOUT.featureHeight + LAYOUT.featureGap),
+        estimatedOutputHeight
       );
 
-    return { width: Math.max(800, width), height: Math.max(400, height) };
-  }, [tokens.length, layerFlowData, selectedLayers, outputPanelWidth]);
+    return { width: Math.max(800, width), height: Math.max(400, contentHeight) };
+  }, [tokens.length, layerFlowData, selectedLayers, outputPanelWidth, estimatedOutputHeight]);
 
   // Output column position
   const outputX = useMemo(() => {
@@ -810,6 +966,33 @@ export function FlowVisualization({ generatedOutput, baselineOutput, isGeneratin
       sortedLayers.length * (LAYOUT.layerColumnWidth + LAYOUT.layerGap)
     );
   }, [selectedLayers]);
+
+  // Compute token activations for the selected feature (for highlighting tokens)
+  const selectedFeatureTokenActivations = useMemo(() => {
+    if (selection.featureId === null || selection.layer === null) {
+      return null; // No feature selected
+    }
+
+    // Find the selected feature in the layer data
+    const layerData = layerFlowData.find((l) => l.layer === selection.layer);
+    if (!layerData) return null;
+
+    const feature = layerData.features.find((f) => f.featureId === selection.featureId);
+    if (!feature) return null;
+
+    // Create a map of tokenIndex -> activation value
+    const activationMap = new Map<number, number>();
+
+    // Initialize all tokens with 0 (feature selected but token doesn't activate it)
+    tokens.forEach((_, idx) => activationMap.set(idx, 0));
+
+    // Set actual activation values for tokens that activate this feature
+    feature.activations.forEach((act) => {
+      activationMap.set(act.tokenIndex, act.activation);
+    });
+
+    return activationMap;
+  }, [selection.featureId, selection.layer, layerFlowData, tokens]);
 
   // Pan handlers
   const handleMouseDown = (e: React.MouseEvent) => {
@@ -836,8 +1019,8 @@ export function FlowVisualization({ generatedOutput, baselineOutput, isGeneratin
     setIsPanning(false);
   };
 
-  // Zoom handler
-  const handleWheel = (e: React.WheelEvent) => {
+  // Zoom handler - uses native event for non-passive listener
+  const handleWheel = useCallback((e: WheelEvent) => {
     e.preventDefault();
 
     const rect = svgRef.current?.getBoundingClientRect();
@@ -849,15 +1032,23 @@ export function FlowVisualization({ generatedOutput, baselineOutput, isGeneratin
 
     // Calculate new scale
     const delta = -e.deltaY * ZOOM_SENSITIVITY;
-    const newScale = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, transform.scale * (1 + delta)));
+    setTransform((prev) => {
+      const newScale = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, prev.scale * (1 + delta)));
+      const scaleRatio = newScale / prev.scale;
+      const newX = mouseX - (mouseX - prev.x) * scaleRatio;
+      const newY = mouseY - (mouseY - prev.y) * scaleRatio;
+      return { x: newX, y: newY, scale: newScale };
+    });
+  }, []);
 
-    // Calculate new position to zoom towards mouse cursor
-    const scaleRatio = newScale / transform.scale;
-    const newX = mouseX - (mouseX - transform.x) * scaleRatio;
-    const newY = mouseY - (mouseY - transform.y) * scaleRatio;
+  // Attach wheel listener with { passive: false } to allow preventDefault
+  useEffect(() => {
+    const svg = svgRef.current;
+    if (!svg) return;
 
-    setTransform({ x: newX, y: newY, scale: newScale });
-  };
+    svg.addEventListener('wheel', handleWheel, { passive: false });
+    return () => svg.removeEventListener('wheel', handleWheel);
+  }, [handleWheel]);
 
   // Center the view on content
   const centerView = useCallback(() => {
@@ -972,7 +1163,7 @@ export function FlowVisualization({ generatedOutput, baselineOutput, isGeneratin
         <div className="absolute top-16 right-4 z-10">
           <FilterControls
             filters={filters}
-            maxActivation={globalMaxActivation}
+            maxActivation={unfilteredGlobalMaxActivation}
             onMinActivationChange={setMinActivation}
             onMinTokenCountChange={setMinTokenCount}
             onReset={resetFilters}
@@ -992,7 +1183,6 @@ export function FlowVisualization({ generatedOutput, baselineOutput, isGeneratin
         onMouseMove={handleMouseMove}
         onMouseUp={handleMouseUp}
         onMouseLeave={handleMouseLeave}
-        onWheel={handleWheel}
       >
         {/* Transformed content group */}
         <g transform={`translate(${transform.x}, ${transform.y}) scale(${transform.scale})`}>
@@ -1007,6 +1197,9 @@ export function FlowVisualization({ generatedOutput, baselineOutput, isGeneratin
             hoveredToken={hoveredToken}
             hoveredFeature={hoveredFeature}
             maxActivation={globalMaxActivation}
+            outputX={outputX}
+            outputHeight={estimatedOutputHeight}
+            showOutputSelected={selection.showOutput}
           />
 
           {/* Input tokens header */}
@@ -1042,6 +1235,12 @@ export function FlowVisualization({ generatedOutput, baselineOutput, isGeneratin
               y={pos.y}
               isSelected={selection.tokenIndex === pos.tokenIndex}
               isHovered={hoveredToken === pos.tokenIndex}
+              featureActivation={
+                selectedFeatureTokenActivations
+                  ? selectedFeatureTokenActivations.get(pos.tokenIndex) ?? 0
+                  : null
+              }
+              maxActivation={globalMaxActivation}
               onSelect={() => selectToken(pos.tokenIndex)}
               onHover={(hovered) => setHoveredToken(hovered ? pos.tokenIndex : null)}
             />
@@ -1100,7 +1299,7 @@ export function FlowVisualization({ generatedOutput, baselineOutput, isGeneratin
             isSelected={selection.showOutput}
             onSelect={selectOutput}
             x={outputX}
-            height={svgDimensions.height - LAYOUT.padding * 2}
+            height={estimatedOutputHeight}
             width={outputPanelWidth}
           />
         </g>

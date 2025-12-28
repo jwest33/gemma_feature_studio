@@ -42,6 +42,9 @@ from app.schemas.analysis import (
     NeuronpediaFeatureResponse,
     NeuronpediaActivation,
     NeuronpediaExplanation,
+    # Model configuration
+    ConfigureModelRequest,
+    ConfigureModelResponse,
 )
 from app.inference.analysis import analyze_prompt
 from app.inference.steering import (
@@ -50,7 +53,7 @@ from app.inference.steering import (
     generate_comparison,
 )
 from app.inference.model_loader import get_model_manager, AVAILABLE_LAYERS
-from app.core.config import get_settings
+from app.core.config import get_settings, get_runtime_config
 
 router = APIRouter(prefix="/api", tags=["features"])
 
@@ -84,6 +87,67 @@ async def unload_model():
     manager = get_model_manager()
     manager.unload_model()
     return {"status": "unloaded", "message": "Model unloaded from memory"}
+
+
+# =============================================================================
+# Model Configuration Endpoints
+# =============================================================================
+
+@router.post("/config", response_model=ConfigureModelResponse)
+async def configure_model(request: ConfigureModelRequest):
+    """
+    Configure model and SAE settings at runtime.
+
+    This updates the runtime configuration without reloading the model.
+    If the model name changes, the model will need to be reloaded.
+    SAE changes take effect on the next SAE load.
+    """
+    runtime_config = get_runtime_config()
+    manager = get_model_manager()
+
+    # Check if model was previously loaded
+    was_loaded = manager.is_loaded
+
+    # Update runtime config
+    requires_reload = runtime_config.update(
+        model_name=request.model_name,
+        sae_repo=request.sae_repo,
+        sae_width=request.sae_width,
+        sae_l0=request.sae_l0,
+        sae_type=request.sae_type,
+    )
+
+    # If model name changed and model was loaded, unload it
+    if requires_reload and was_loaded:
+        manager.unload_model()
+        message = "Configuration updated. Model unloaded due to model change - will reload on next analysis."
+    elif requires_reload:
+        message = "Configuration updated. New model will be used on next load."
+    else:
+        # Clear SAE registry if SAE config changed (width, l0, type, or repo)
+        if manager._sae_registry:
+            manager._sae_registry.clear_all()
+        message = "Configuration updated. SAE cache cleared - new SAEs will be loaded on next analysis."
+
+    return ConfigureModelResponse(
+        status="configured",
+        message=message,
+        config=runtime_config.to_dict(),
+        requires_reload=requires_reload,
+    )
+
+
+@router.get("/config")
+async def get_config():
+    """Get current runtime configuration."""
+    runtime_config = get_runtime_config()
+    manager = get_model_manager()
+
+    return {
+        "config": runtime_config.to_dict(),
+        "model_loaded": manager.is_loaded,
+        "loaded_layers": manager.get_loaded_layers() if manager.is_loaded else [],
+    }
 
 
 @router.post("/analyze", response_model=AnalyzeResponse)
@@ -309,7 +373,7 @@ async def analyze_multi_layer(request: MultiLayerAnalyzeRequest):
     Returns feature activations for each token at each selected layer.
     """
     manager = get_model_manager()
-    settings = get_settings()
+    runtime_config = get_runtime_config()
 
     # Ensure model is loaded
     if not manager.is_loaded:
@@ -354,7 +418,7 @@ async def analyze_multi_layer(request: MultiLayerAnalyzeRequest):
 
             layer_activations_list.append(LayerActivations(
                 layer=layer_idx,
-                hook_point=f"{settings.sae_type}/layer_{layer_idx}",
+                hook_point=f"{runtime_config.sae_type}/layer_{layer_idx}",
                 token_activations=token_activations,
             ))
 
@@ -362,8 +426,8 @@ async def analyze_multi_layer(request: MultiLayerAnalyzeRequest):
             prompt=request.prompt,
             tokens=output_tokens,
             layers=layer_activations_list,
-            model_name=settings.model_name,
-            sae_width=settings.sae_width,
+            model_name=runtime_config.model_name,
+            sae_width=runtime_config.sae_width,
             analyzed_layers=[la.layer for la in layer_activations_list],
         )
 
@@ -385,7 +449,7 @@ async def analyze_batch(request: BatchAnalyzeRequest):
     Processes prompts sequentially to manage GPU memory.
     """
     manager = get_model_manager()
-    settings = get_settings()
+    runtime_config = get_runtime_config()
     start_time = time.time()
 
     # Ensure model is loaded
@@ -435,7 +499,7 @@ async def analyze_batch(request: BatchAnalyzeRequest):
 
                 layer_activations_list.append(LayerActivations(
                     layer=layer_idx,
-                    hook_point=f"{settings.sae_type}/layer_{layer_idx}",
+                    hook_point=f"{runtime_config.sae_type}/layer_{layer_idx}",
                     token_activations=token_activations,
                 ))
 
@@ -464,8 +528,8 @@ async def analyze_batch(request: BatchAnalyzeRequest):
 
     return BatchAnalyzeResponse(
         results=results,
-        model_name=settings.model_name,
-        sae_width=settings.sae_width,
+        model_name=runtime_config.model_name,
+        sae_width=runtime_config.sae_width,
         analyzed_layers=request.layers,
         total_prompts=len(request.prompts),
         successful=successful,
@@ -480,7 +544,7 @@ async def analyze_batch_stream(request: BatchAnalyzeRequest):
     Analyze multiple prompts with streaming progress updates via SSE.
     """
     manager = get_model_manager()
-    settings = get_settings()
+    runtime_config = get_runtime_config()
 
     # Ensure model is loaded
     if not manager.is_loaded:
@@ -539,7 +603,7 @@ async def analyze_batch_stream(request: BatchAnalyzeRequest):
 
                     layer_activations_list.append({
                         "layer": layer_idx,
-                        "hook_point": f"{settings.sae_type}/layer_{layer_idx}",
+                        "hook_point": f"{runtime_config.sae_type}/layer_{layer_idx}",
                         "token_activations": token_activations,
                     })
 

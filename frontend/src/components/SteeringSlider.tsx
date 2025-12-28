@@ -3,8 +3,22 @@
 import { useState, useCallback, useEffect, useMemo } from "react";
 import debounce from "lodash/debounce";
 
+// Layer color classes for consistent styling
+const LAYER_COLORS: Record<number, { text: string; bg: string; border: string }> = {
+  9: { text: "text-purple-400", bg: "bg-purple-500/20", border: "border-purple-500/30" },
+  17: { text: "text-blue-400", bg: "bg-blue-500/20", border: "border-blue-500/30" },
+  22: { text: "text-cyan-400", bg: "bg-cyan-500/20", border: "border-cyan-500/30" },
+  29: { text: "text-green-400", bg: "bg-green-500/20", border: "border-green-500/30" },
+};
+
+function getLayerColors(layer?: number) {
+  if (layer === undefined) return { text: "text-zinc-400", bg: "bg-zinc-500/20", border: "border-zinc-500/30" };
+  return LAYER_COLORS[layer] || { text: "text-zinc-400", bg: "bg-zinc-500/20", border: "border-zinc-500/30" };
+}
+
 interface SteeringSliderProps {
   featureId: number;
+  layer?: number;
   featureName?: string;
   value: number;
   enabled: boolean;
@@ -19,6 +33,7 @@ interface SteeringSliderProps {
 
 export function SteeringSlider({
   featureId,
+  layer,
   featureName,
   value,
   enabled,
@@ -30,6 +45,7 @@ export function SteeringSlider({
   step = 0.01,
   debounceMs = 300,
 }: SteeringSliderProps) {
+  const layerColors = getLayerColors(layer);
   const [localValue, setLocalValue] = useState(value);
 
   // Sync local value when prop changes externally
@@ -108,12 +124,17 @@ export function SteeringSlider({
               </svg>
             )}
           </button>
-          <div>
+          <div className="flex items-center gap-2">
+            {layer !== undefined && (
+              <span className={`text-xs px-1.5 py-0.5 rounded ${layerColors.bg} ${layerColors.text} ${layerColors.border} border`}>
+                L{layer}
+              </span>
+            )}
             <span className="text-sm font-medium text-zinc-300">
-              Feature {featureId}
+              #{featureId}
             </span>
             {featureName && (
-              <span className="text-xs text-zinc-500 ml-2 truncate max-w-[150px] inline-block align-bottom">
+              <span className="text-xs text-zinc-500 truncate max-w-[150px]">
                 {featureName}
               </span>
             )}

@@ -281,3 +281,27 @@ class NeuronpediaFeatureResponse(BaseModel):
     )
     neuronpedia_url: str = Field(..., description="URL to view on Neuronpedia")
     hasData: bool = Field(default=True, description="Whether feature data exists")
+
+
+# ============================================================================
+# Model Configuration Schemas
+# ============================================================================
+
+class ConfigureModelRequest(BaseModel):
+    """Request to configure model and SAE settings."""
+    model_name: str = Field(..., description="HuggingFace model ID or local path")
+    sae_repo: str = Field(..., description="HuggingFace SAE repository ID")
+    sae_width: str = Field(default="65k", description="SAE width (16k, 65k, 262k, 1m)")
+    sae_l0: str = Field(default="medium", description="L0 regularization level")
+    sae_type: str = Field(default="resid_post", description="SAE hook type")
+
+
+class ConfigureModelResponse(BaseModel):
+    """Response after configuring model settings."""
+    status: str = Field(..., description="Configuration status")
+    message: str = Field(..., description="Status message")
+    config: dict = Field(..., description="Current configuration")
+    requires_reload: bool = Field(
+        default=False,
+        description="Whether model needs to be reloaded for changes to take effect"
+    )
