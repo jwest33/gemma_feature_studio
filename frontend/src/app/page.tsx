@@ -1,11 +1,11 @@
 "use client";
 
 import { useState, useCallback, useRef } from "react";
-import { useFlowStore } from "@/state/flowStore";
+import { useFlowStore, usePanelConfig } from "@/state/flowStore";
 import { LayerSelector, VRAMMonitor, PromptManager } from "@/components/controls";
-import { FlowVisualization, FeatureInspector } from "@/components/flow";
+import { FlowVisualization, FeatureInspector, ResizablePanel, type SteeringConfig } from "@/components/flow";
 import { analyzeMultiLayer, loadSAEs, generateTextStream } from "@/lib/api";
-import type { MultiLayerAnalyzeResponse } from "@/types/flow";
+import type { GenerateRequest } from "@/types/analysis";
 
 export default function Home() {
   const {
@@ -18,15 +18,17 @@ export default function Home() {
     setAnalysisProgress,
     setAnalysisError,
     updatePromptAnalysis,
-    setSystemStatus,
+    selectOutput,
   } = useFlowStore();
 
   const activePrompt = useFlowStore((state) => state.getActivePrompt());
+  const panelConfig = usePanelConfig();
   const [generatedOutput, setGeneratedOutput] = useState<string | undefined>();
+  const [baselineOutput, setBaselineOutput] = useState<string | undefined>();
   const [isGenerating, setIsGenerating] = useState(false);
   const abortControllerRef = useRef<AbortController | null>(null);
 
-  // Generate LLM response for a prompt
+  // Generate LLM response for a prompt (no steering)
   const generateResponse = useCallback(async (promptText: string) => {
     // Cancel any existing generation
     if (abortControllerRef.current) {
@@ -36,6 +38,7 @@ export default function Home() {
     abortControllerRef.current = new AbortController();
     setIsGenerating(true);
     setGeneratedOutput("");
+    setBaselineOutput(undefined);
 
     try {
       let output = "";
@@ -56,6 +59,76 @@ export default function Home() {
     }
   }, []);
 
+  // Generate with steering for comparison
+  const handleGenerateWithSteering = useCallback(async (config: SteeringConfig) => {
+    if (!activePrompt) return;
+
+    // Cancel any existing generation
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
+
+    abortControllerRef.current = new AbortController();
+    setIsGenerating(true);
+    setGeneratedOutput("");
+    setBaselineOutput("");
+
+    const promptText = activePrompt.text;
+
+    try {
+      // First generate baseline (no steering)
+      let baseline = "";
+      const baselineRequest: GenerateRequest = {
+        prompt: promptText,
+        steering: [],
+        max_tokens: 256,
+        normalization: "none",
+      };
+
+      for await (const token of generateTextStream(
+        baselineRequest,
+        abortControllerRef.current.signal
+      )) {
+        baseline += token;
+        setBaselineOutput(baseline);
+      }
+
+      // Then generate steered output
+      let steered = "";
+      const steeredRequest: GenerateRequest = {
+        prompt: promptText,
+        steering: [{
+          feature_id: config.featureId,
+          coefficient: config.coefficient,
+          layer: config.layer,
+        }],
+        max_tokens: 256,
+        normalization: config.normalization,
+        norm_clamp_factor: config.normClampFactor,
+        unit_normalize: config.unitNormalize,
+      };
+
+      for await (const token of generateTextStream(
+        steeredRequest,
+        abortControllerRef.current.signal
+      )) {
+        steered += token;
+        setGeneratedOutput(steered);
+      }
+
+      // Show output in inspector
+      selectOutput();
+
+    } catch (e) {
+      if ((e as Error).name !== "AbortError") {
+        console.error("Steered generation error:", e);
+      }
+    } finally {
+      setIsGenerating(false);
+      abortControllerRef.current = null;
+    }
+  }, [activePrompt, selectOutput]);
+
   // Analyze all prompts
   const handleAnalyze = useCallback(async () => {
     if (prompts.length === 0 || selectedLayers.length === 0) return;
@@ -63,6 +136,7 @@ export default function Home() {
     setAnalyzing(true);
     setAnalysisError(null);
     setGeneratedOutput(undefined);
+    setBaselineOutput(undefined);
 
     try {
       // First, ensure SAEs are loaded for selected layers
@@ -108,9 +182,9 @@ export default function Home() {
       <header className="border-b border-zinc-800 shrink-0">
         <div className="px-6 py-4 flex items-center justify-between">
           <div>
-            <h1 className="text-xl font-bold text-white">LM Feature Studio</h1>
+            <h1 className="text-xl font-bold text-white">Gemma Feature Studio</h1>
             <p className="text-sm text-zinc-500">
-              Multi-Layer SAE Analysis and Feature Visualization
+              Multi-Layer SAE Analysis and Feature Steering
             </p>
           </div>
           <VRAMMonitor compact />
@@ -198,14 +272,26 @@ export default function Home() {
         </div>
       )}
 
-      {/* Main Flow Visualization */}
-      <div className="flex-1 overflow-hidden min-h-0">
-        <FlowVisualization generatedOutput={generatedOutput} isGenerating={isGenerating} />
-      </div>
+      {/* Main Content Area - Visualization + Inspector Panel */}
+      <div className={`flex-1 overflow-hidden min-h-0 flex ${panelConfig.position === "right" ? "flex-row" : "flex-col"}`}>
+        {/* Flow Visualization */}
+        <div className="flex-1 overflow-hidden min-h-0 min-w-0">
+          <FlowVisualization
+            generatedOutput={generatedOutput}
+            baselineOutput={baselineOutput}
+            isGenerating={isGenerating}
+          />
+        </div>
 
-      {/* Bottom Panel - Feature Inspector */}
-      <div className="border-t border-zinc-800 h-64 shrink-0 bg-zinc-900/50">
-        <FeatureInspector generatedOutput={generatedOutput} />
+        {/* Feature Inspector Panel */}
+        <ResizablePanel>
+          <FeatureInspector
+            onGenerateWithSteering={handleGenerateWithSteering}
+            generatedOutput={generatedOutput}
+            baselineOutput={baselineOutput}
+            isGenerating={isGenerating}
+          />
+        </ResizablePanel>
       </div>
     </main>
   );

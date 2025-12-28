@@ -1,3 +1,4 @@
+from enum import Enum
 from pydantic import BaseModel, Field
 
 
@@ -39,6 +40,14 @@ class AnalyzeResponse(BaseModel):
 class SteeringFeature(BaseModel):
     feature_id: int = Field(..., ge=0, description="Feature index to steer")
     coefficient: float = Field(..., ge=-5.0, le=5.0, description="Steering strength")
+    layer: int | None = Field(default=None, description="Optional layer override for this feature")
+
+
+class NormalizationMode(str, Enum):
+    """Normalization mode for steering."""
+    none = "none"
+    preserve_norm = "preserve_norm"
+    clamp = "clamp"
 
 
 class GenerateRequest(BaseModel):
@@ -51,6 +60,18 @@ class GenerateRequest(BaseModel):
     include_baseline: bool = Field(
         default=True, description="Also generate without steering for comparison"
     )
+    normalization: NormalizationMode = Field(
+        default=NormalizationMode.preserve_norm,
+        description="Post-steering normalization mode: none, preserve_norm, or clamp"
+    )
+    norm_clamp_factor: float = Field(
+        default=1.5, ge=1.0, le=3.0,
+        description="For clamp mode, max allowed norm change ratio"
+    )
+    unit_normalize: bool = Field(
+        default=False,
+        description="Normalize decoder vectors to unit norm before applying"
+    )
 
 
 class GenerateResponse(BaseModel):
@@ -58,6 +79,8 @@ class GenerateResponse(BaseModel):
     baseline_output: str | None = None
     steered_output: str
     steering_config: list[SteeringFeature]
+    normalization: NormalizationMode = NormalizationMode.preserve_norm
+    unit_normalize: bool = False
 
 
 # ============================================================================
@@ -215,3 +238,46 @@ class UnloadSAEResponse(BaseModel):
     success: bool = Field(..., description="Whether unload was successful")
     layer: int = Field(..., description="Layer that was unloaded")
     vram_status: VRAMStatus = Field(..., description="Current VRAM status after unloading")
+
+
+# ============================================================================
+# Neuronpedia Feature Info Schemas
+# ============================================================================
+
+class NeuronpediaActivation(BaseModel):
+    """A single activation example from Neuronpedia."""
+    tokens: list[str] = Field(default=[], description="Tokens in the activation context")
+    values: list[float] = Field(default=[], description="Activation values per token")
+    maxValue: float = Field(default=0.0, description="Maximum activation value")
+    maxTokenIndex: int = Field(default=0, description="Index of max activation token")
+
+
+class NeuronpediaExplanation(BaseModel):
+    """Auto-interpretation explanation from Neuronpedia."""
+    description: str = Field(default="", description="Human-readable explanation")
+    explanationType: str = Field(default="", description="Type of explanation method")
+    typeName: str | None = Field(default=None, description="Friendly type name")
+    explanationModelName: str | None = Field(default=None, description="Model used for explanation")
+    score: float | None = Field(default=None, description="Confidence score")
+
+
+class NeuronpediaFeatureRequest(BaseModel):
+    """Request to get feature info from Neuronpedia."""
+    feature_id: int = Field(..., ge=0, description="Feature index in the SAE")
+    layer: int = Field(..., description="Layer index")
+
+
+class NeuronpediaFeatureResponse(BaseModel):
+    """Response containing Neuronpedia feature information."""
+    modelId: str = Field(..., description="Neuronpedia model identifier")
+    layer: str = Field(..., description="Neuronpedia layer/SAE identifier")
+    index: int = Field(..., description="Feature index")
+    description: str | None = Field(default=None, description="Feature description/explanation")
+    explanations: list[NeuronpediaExplanation] = Field(
+        default=[], description="Auto-interpretation explanations"
+    )
+    activations: list[NeuronpediaActivation] = Field(
+        default=[], description="Example activations"
+    )
+    neuronpedia_url: str = Field(..., description="URL to view on Neuronpedia")
+    hasData: bool = Field(default=True, description="Whether feature data exists")

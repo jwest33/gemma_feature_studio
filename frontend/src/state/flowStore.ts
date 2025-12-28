@@ -17,6 +17,26 @@ import type {
 import type { LayerActivations } from "@/types/analysis";
 
 // ============================================================================
+// Filter Types
+// ============================================================================
+
+export interface FlowFilters {
+  minActivation: number;  // Minimum activation strength (0-1 normalized)
+  minTokenCount: number;  // Minimum number of tokens activating a feature
+}
+
+// ============================================================================
+// Panel Types
+// ============================================================================
+
+export type PanelPosition = "bottom" | "right";
+
+export interface PanelConfig {
+  position: PanelPosition;
+  size: number;  // Height when bottom, width when right (in pixels)
+}
+
+// ============================================================================
 // Store State Interface
 // ============================================================================
 
@@ -27,6 +47,12 @@ interface FlowState {
 
   // Layer Selection
   selectedLayers: number[];
+
+  // Filters
+  filters: FlowFilters;
+
+  // Inspector Panel
+  panelConfig: PanelConfig;
 
   // System Status
   systemStatus: SystemStatus | null;
@@ -76,6 +102,16 @@ interface FlowState {
   setComparisonLayer: (layer: number) => void;
   clearComparison: () => void;
 
+  // Actions - Filters
+  setMinActivation: (value: number) => void;
+  setMinTokenCount: (value: number) => void;
+  resetFilters: () => void;
+
+  // Actions - Panel
+  setPanelPosition: (position: PanelPosition) => void;
+  setPanelSize: (size: number) => void;
+  togglePanelPosition: () => void;
+
   // Selectors
   getActivePrompt: () => PromptAnalysis | null;
   getPromptById: (id: string) => PromptAnalysis | undefined;
@@ -101,6 +137,14 @@ export const useFlowStore = create<FlowState>()(
       prompts: [],
       activePromptId: null,
       selectedLayers: [17], // Default to layer 17
+      filters: {
+        minActivation: 0,
+        minTokenCount: 1,
+      },
+      panelConfig: {
+        position: "bottom",
+        size: 288, // 72 * 4 = h-72 equivalent
+      },
       systemStatus: null,
       isLoadingStatus: false,
       isAnalyzing: false,
@@ -356,6 +400,65 @@ export const useFlowStore = create<FlowState>()(
       },
 
       // ======================================================================
+      // Filter Actions
+      // ======================================================================
+
+      setMinActivation: (value: number) => {
+        set((state) => ({
+          filters: { ...state.filters, minActivation: value },
+        }));
+      },
+
+      setMinTokenCount: (value: number) => {
+        set((state) => ({
+          filters: { ...state.filters, minTokenCount: Math.max(1, Math.round(value)) },
+        }));
+      },
+
+      resetFilters: () => {
+        set({
+          filters: { minActivation: 0, minTokenCount: 1 },
+        });
+      },
+
+      // ======================================================================
+      // Panel Actions
+      // ======================================================================
+
+      setPanelPosition: (position: PanelPosition) => {
+        set((state) => ({
+          panelConfig: {
+            ...state.panelConfig,
+            position,
+            // Reset size to default for new position
+            size: position === "bottom" ? 288 : 400,
+          },
+        }));
+      },
+
+      setPanelSize: (size: number) => {
+        const position = get().panelConfig.position;
+        const maxSize = position === "bottom" ? 600 : 1200;
+        set((state) => ({
+          panelConfig: {
+            ...state.panelConfig,
+            size: Math.max(200, Math.min(size, maxSize)),
+          },
+        }));
+      },
+
+      togglePanelPosition: () => {
+        const current = get().panelConfig.position;
+        const newPosition = current === "bottom" ? "right" : "bottom";
+        set({
+          panelConfig: {
+            position: newPosition,
+            size: newPosition === "bottom" ? 288 : 400,
+          },
+        });
+      },
+
+      // ======================================================================
       // Selectors
       // ======================================================================
 
@@ -393,6 +496,8 @@ export const useFlowStore = create<FlowState>()(
       partialize: (state) => ({
         // Only persist these fields
         selectedLayers: state.selectedLayers,
+        filters: state.filters,
+        panelConfig: state.panelConfig,
         // Don't persist prompts or analysis results (too large)
       }),
     }
@@ -409,3 +514,5 @@ export const useSystemStatus = () => useFlowStore((state) => state.systemStatus)
 export const useIsAnalyzing = () => useFlowStore((state) => state.isAnalyzing);
 export const useAnalysisProgress = () => useFlowStore((state) => state.analysisProgress);
 export const useSelection = () => useFlowStore((state) => state.selection);
+export const useFilters = () => useFlowStore((state) => state.filters);
+export const usePanelConfig = () => useFlowStore((state) => state.panelConfig);

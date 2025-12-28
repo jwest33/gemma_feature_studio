@@ -14,7 +14,7 @@ class Settings(BaseSettings):
     )
 
     # API settings
-    api_title: str = "LM Feature Studio API"
+    api_title: str = "Gemma Feature Studio API"
     api_version: str = "0.1.0"
     debug: bool = True
 
@@ -40,6 +40,13 @@ class Settings(BaseSettings):
     # Generation settings
     max_new_tokens: int = 256
     default_temperature: float = 0.7
+
+    # Neuronpedia API settings
+    neuronpedia_api_key: str | None = None
+    neuronpedia_username: str | None = None
+    neuronpedia_base_url: str = "https://www.neuronpedia.org/api"
+    # Model ID for Neuronpedia (maps to their naming convention)
+    neuronpedia_model_id: str = "gemma-3-4b-it"
 
 
 @lru_cache

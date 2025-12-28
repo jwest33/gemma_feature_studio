@@ -1,8 +1,10 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useMemo, useState, useCallback, useEffect } from "react";
 import { useFlowStore } from "@/state/flowStore";
-import type { FeatureActivation, TokenActivations } from "@/types/analysis";
+import type { FeatureActivation, NeuronpediaFeatureResponse } from "@/types/analysis";
+import type { NormalizationMode } from "@/types/analysis";
+import { getNeuronpediaFeature } from "@/lib/api";
 
 // Full class names for Tailwind JIT - dynamic class construction doesn't work
 const LAYER_TEXT_CLASSES: Record<number, string> = {
@@ -16,15 +18,71 @@ function getLayerTextClass(layer: number): string {
   return LAYER_TEXT_CLASSES[layer] || "text-zinc-400";
 }
 
-interface FeatureInspectorProps {
-  onAddToSteering?: (featureId: number) => void;
-  generatedOutput?: string;
+export interface SteeringConfig {
+  featureId: number;
+  layer: number | null;
+  coefficient: number;
+  normalization: NormalizationMode;
+  normClampFactor: number;
+  unitNormalize: boolean;
 }
 
-export function FeatureInspector({ onAddToSteering, generatedOutput }: FeatureInspectorProps) {
+interface FeatureInspectorProps {
+  onGenerateWithSteering?: (config: SteeringConfig) => void;
+  generatedOutput?: string;
+  baselineOutput?: string;
+  isGenerating?: boolean;
+}
+
+export function FeatureInspector({
+  onGenerateWithSteering,
+  generatedOutput,
+  baselineOutput,
+  isGenerating = false,
+}: FeatureInspectorProps) {
   const { selection, selectedLayers, clearSelection } = useFlowStore();
   const activePrompt = useFlowStore((state) => state.getActivePrompt());
   const [copied, setCopied] = useState(false);
+
+  // Steering state
+  const [coefficient, setCoefficient] = useState(0);
+  const [normalization, setNormalization] = useState<NormalizationMode>("preserve_norm");
+  const [normClampFactor, setNormClampFactor] = useState(1.5);
+  const [unitNormalize, setUnitNormalize] = useState(false);
+  const [showAdvanced, setShowAdvanced] = useState(false);
+
+  // Neuronpedia state
+  const [neuronpediaData, setNeuronpediaData] = useState<NeuronpediaFeatureResponse | null>(null);
+  const [neuronpediaLoading, setNeuronpediaLoading] = useState(false);
+  const [neuronpediaError, setNeuronpediaError] = useState<string | null>(null);
+
+  // Fetch Neuronpedia data when a feature is selected
+  useEffect(() => {
+    if (selection.featureId === null || selection.layer === null) {
+      setNeuronpediaData(null);
+      setNeuronpediaError(null);
+      return;
+    }
+
+    const fetchNeuronpediaData = async () => {
+      setNeuronpediaLoading(true);
+      setNeuronpediaError(null);
+      try {
+        const data = await getNeuronpediaFeature({
+          feature_id: selection.featureId!,
+          layer: selection.layer!,
+        });
+        setNeuronpediaData(data);
+      } catch (err) {
+        setNeuronpediaError(err instanceof Error ? err.message : "Failed to fetch from Neuronpedia");
+        setNeuronpediaData(null);
+      } finally {
+        setNeuronpediaLoading(false);
+      }
+    };
+
+    fetchNeuronpediaData();
+  }, [selection.featureId, selection.layer]);
 
   // Get selected token data
   const selectedTokenData = useMemo(() => {
@@ -93,6 +151,20 @@ export function FeatureInspector({ onAddToSteering, generatedOutput }: FeatureIn
     return featureData;
   }, [selection.featureId, activePrompt, selectedLayers]);
 
+  // Handle generate with steering
+  const handleGenerate = useCallback(() => {
+    if (selection.featureId === null || !onGenerateWithSteering) return;
+
+    onGenerateWithSteering({
+      featureId: selection.featureId,
+      layer: selection.layer,
+      coefficient,
+      normalization,
+      normClampFactor,
+      unitNormalize,
+    });
+  }, [selection.featureId, selection.layer, coefficient, normalization, normClampFactor, unitNormalize, onGenerateWithSteering]);
+
   if (!activePrompt) {
     return (
       <div className="h-full flex items-center justify-center text-zinc-500 text-sm">
@@ -107,7 +179,7 @@ export function FeatureInspector({ onAddToSteering, generatedOutput }: FeatureIn
         <div className="text-center">
           <p>Click on a token, feature, or output to inspect</p>
           <p className="text-xs mt-1 text-zinc-600">
-            Tokens show feature activations • Features show where they appear • Output can be copied
+            Tokens show feature activations • Features show where they appear • Click a feature to steer
           </p>
         </div>
       </div>
@@ -115,12 +187,10 @@ export function FeatureInspector({ onAddToSteering, generatedOutput }: FeatureIn
   }
 
   // Handle copy to clipboard
-  const handleCopy = async () => {
-    if (generatedOutput) {
-      await navigator.clipboard.writeText(generatedOutput);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    }
+  const handleCopy = async (text: string) => {
+    await navigator.clipboard.writeText(text);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
   };
 
   return (
@@ -137,26 +207,6 @@ export function FeatureInspector({ onAddToSteering, generatedOutput }: FeatureIn
             : "Inspector"}
         </h3>
         <div className="flex items-center gap-2">
-          {selection.showOutput && generatedOutput && (
-            <button
-              onClick={handleCopy}
-              className={`px-3 py-1 text-xs rounded transition-colors ${
-                copied
-                  ? "bg-green-600 text-white"
-                  : "bg-green-600 text-white hover:bg-green-500"
-              }`}
-            >
-              {copied ? "Copied!" : "Copy to Clipboard"}
-            </button>
-          )}
-          {selection.featureId !== null && onAddToSteering && (
-            <button
-              onClick={() => onAddToSteering(selection.featureId!)}
-              className="px-2 py-1 text-xs bg-blue-600 text-white rounded hover:bg-blue-500"
-            >
-              Add to Steering
-            </button>
-          )}
           <button
             onClick={clearSelection}
             className="p-1 text-zinc-500 hover:text-zinc-300"
@@ -179,15 +229,68 @@ export function FeatureInspector({ onAddToSteering, generatedOutput }: FeatureIn
         {/* Output Display */}
         {selection.showOutput && (
           <div className="space-y-4">
-            {generatedOutput ? (
-              <div className="bg-zinc-800 rounded-lg p-4 border border-green-500/30">
-                <pre className="text-sm text-zinc-200 whitespace-pre-wrap font-mono select-all">
-                  {generatedOutput}
-                </pre>
+            {(generatedOutput || baselineOutput) ? (
+              <div className="space-y-4">
+                {/* Comparison View */}
+                {baselineOutput && generatedOutput && (
+                  <div className="grid grid-cols-2 gap-4">
+                    {/* Baseline */}
+                    <div className="bg-zinc-800 rounded-lg p-3 border border-zinc-700">
+                      <div className="flex items-center justify-between mb-2">
+                        <span className="text-xs text-zinc-400 font-medium">Baseline (no steering)</span>
+                        <button
+                          onClick={() => handleCopy(baselineOutput)}
+                          className="text-xs text-zinc-500 hover:text-zinc-300"
+                        >
+                          Copy
+                        </button>
+                      </div>
+                      <pre className="text-sm text-zinc-300 whitespace-pre-wrap font-mono select-all">
+                        {baselineOutput}
+                      </pre>
+                    </div>
+                    {/* Steered */}
+                    <div className="bg-zinc-800 rounded-lg p-3 border border-green-500/30">
+                      <div className="flex items-center justify-between mb-2">
+                        <span className="text-xs text-green-400 font-medium">Steered Output</span>
+                        <button
+                          onClick={() => handleCopy(generatedOutput)}
+                          className="text-xs text-zinc-500 hover:text-zinc-300"
+                        >
+                          {copied ? "Copied!" : "Copy"}
+                        </button>
+                      </div>
+                      <pre className="text-sm text-zinc-200 whitespace-pre-wrap font-mono select-all">
+                        {generatedOutput}
+                      </pre>
+                    </div>
+                  </div>
+                )}
+                {/* Single output (no comparison) */}
+                {!baselineOutput && generatedOutput && (
+                  <div className="bg-zinc-800 rounded-lg p-4 border border-green-500/30">
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-xs text-zinc-400">Generated Output</span>
+                      <button
+                        onClick={() => handleCopy(generatedOutput)}
+                        className={`px-3 py-1 text-xs rounded transition-colors ${
+                          copied
+                            ? "bg-green-600 text-white"
+                            : "bg-green-600 text-white hover:bg-green-500"
+                        }`}
+                      >
+                        {copied ? "Copied!" : "Copy to Clipboard"}
+                      </button>
+                    </div>
+                    <pre className="text-sm text-zinc-200 whitespace-pre-wrap font-mono select-all">
+                      {generatedOutput}
+                    </pre>
+                  </div>
+                )}
               </div>
             ) : (
               <div className="text-zinc-500 text-sm italic">
-                No output generated yet. Run analysis on a single prompt to generate output.
+                No output generated yet. Select a feature and adjust the steering slider to generate.
               </div>
             )}
           </div>
@@ -235,47 +338,339 @@ export function FeatureInspector({ onAddToSteering, generatedOutput }: FeatureIn
           </div>
         )}
 
-        {/* Feature Inspector */}
+        {/* Feature Inspector with Steering Controls */}
         {selection.featureId !== null && selectedFeatureData && (
-          <div className="space-y-4">
-            <div className="text-xs text-zinc-400">
-              Found in {selectedFeatureData.occurrences.length} position(s)
+          <div className="flex-1 flex flex-col min-h-0 space-y-4">
+            {/* Steering Controls */}
+            {onGenerateWithSteering && (
+              <div className="bg-zinc-800/50 rounded-lg p-4 border border-zinc-700 shrink-0">
+                <div className="flex items-center justify-between mb-3">
+                  <h4 className="text-sm font-medium text-white">Steer Feature #{selection.featureId}</h4>
+                  <button
+                    onClick={() => setShowAdvanced(!showAdvanced)}
+                    className="text-xs text-zinc-500 hover:text-zinc-300"
+                  >
+                    {showAdvanced ? "Hide Options" : "Show Options"}
+                  </button>
+                </div>
+
+                {/* Coefficient Slider */}
+                <div className="space-y-2 mb-4">
+                  <div className="flex items-center justify-between">
+                    <label className="text-xs text-zinc-400">Steering Coefficient</label>
+                    <span className="text-xs font-mono text-zinc-300">
+                      {coefficient > 0 ? "+" : ""}{coefficient.toFixed(2)}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="range"
+                      min="-2"
+                      max="2"
+                      step="0.01"
+                      value={coefficient}
+                      onChange={(e) => setCoefficient(parseFloat(e.target.value))}
+                      className="flex-1 h-2 bg-zinc-700 rounded-lg appearance-none cursor-pointer accent-blue-500"
+                    />
+                    <input
+                      type="number"
+                      min="-2"
+                      max="2"
+                      step="0.01"
+                      value={coefficient}
+                      onChange={(e) => {
+                        const val = parseFloat(e.target.value);
+                        if (!isNaN(val)) {
+                          setCoefficient(Math.max(-2, Math.min(2, val)));
+                        }
+                      }}
+                      className="w-16 px-2 py-1 text-xs font-mono text-center bg-zinc-800 border border-zinc-600 rounded text-white focus:outline-none focus:border-blue-500"
+                    />
+                  </div>
+                  <div className="flex justify-between text-xs text-zinc-500">
+                    <span>-2 (suppress)</span>
+                    <span>0</span>
+                    <span>+2 (amplify)</span>
+                  </div>
+                </div>
+
+                {/* Advanced Options */}
+                {showAdvanced && (
+                  <div className="space-y-3 mb-4 pt-3 border-t border-zinc-700">
+                    {/* Normalization Mode */}
+                    <div>
+                      <label className="text-xs text-zinc-400 block mb-1">Normalization Mode</label>
+                      <div className="flex gap-2">
+                        {(["preserve_norm", "clamp", "none"] as NormalizationMode[]).map((mode) => (
+                          <button
+                            key={mode}
+                            onClick={() => setNormalization(mode)}
+                            className={`px-2 py-1 text-xs rounded transition-colors ${
+                              normalization === mode
+                                ? "bg-blue-600 text-white"
+                                : "bg-zinc-700 text-zinc-300 hover:bg-zinc-600"
+                            }`}
+                          >
+                            {mode === "preserve_norm" ? "Preserve Norm" : mode === "clamp" ? "Clamp" : "None"}
+                          </button>
+                        ))}
+                      </div>
+                      <p className="text-xs text-zinc-500 mt-1">
+                        {normalization === "preserve_norm" && "Rescale to maintain original activation norm"}
+                        {normalization === "clamp" && "Allow bounded norm changes within a factor"}
+                        {normalization === "none" && "Raw steering without normalization"}
+                      </p>
+                    </div>
+
+                    {/* Clamp Factor (only shown when clamp mode is selected) */}
+                    {normalization === "clamp" && (
+                      <div>
+                        <div className="flex items-center justify-between">
+                          <label className="text-xs text-zinc-400">Clamp Factor</label>
+                          <span className="text-xs font-mono text-zinc-300">{normClampFactor.toFixed(1)}x</span>
+                        </div>
+                        <input
+                          type="range"
+                          min="1.0"
+                          max="3.0"
+                          step="0.1"
+                          value={normClampFactor}
+                          onChange={(e) => setNormClampFactor(parseFloat(e.target.value))}
+                          className="w-full h-2 bg-zinc-700 rounded-lg appearance-none cursor-pointer accent-blue-500"
+                        />
+                      </div>
+                    )}
+
+                    {/* Unit Normalize Toggle */}
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <label className="text-xs text-zinc-400">Unit Normalize Decoder</label>
+                        <p className="text-xs text-zinc-500">Normalize decoder vector to unit norm</p>
+                      </div>
+                      <button
+                        onClick={() => setUnitNormalize(!unitNormalize)}
+                        className={`w-10 h-5 rounded-full transition-colors ${
+                          unitNormalize ? "bg-blue-600" : "bg-zinc-600"
+                        }`}
+                      >
+                        <div
+                          className={`w-4 h-4 bg-white rounded-full transition-transform ${
+                            unitNormalize ? "translate-x-5" : "translate-x-0.5"
+                          }`}
+                        />
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {/* Generate Button */}
+                <button
+                  onClick={handleGenerate}
+                  disabled={isGenerating || coefficient === 0}
+                  className={`w-full py-2 rounded-lg font-medium transition-colors ${
+                    isGenerating
+                      ? "bg-blue-600/50 text-blue-200 cursor-wait"
+                      : coefficient === 0
+                      ? "bg-zinc-700 text-zinc-400 cursor-not-allowed"
+                      : "bg-blue-600 text-white hover:bg-blue-500"
+                  }`}
+                >
+                  {isGenerating ? (
+                    <span className="flex items-center justify-center gap-2">
+                      <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                      </svg>
+                      Generating...
+                    </span>
+                  ) : (
+                    `Generate with Steering (${coefficient > 0 ? "+" : ""}${coefficient.toFixed(2)})`
+                  )}
+                </button>
+              </div>
+            )}
+
+            {/* Neuronpedia Feature Info */}
+            <div className="bg-gradient-to-b from-zinc-800/80 to-zinc-800/40 rounded-lg p-4 border border-zinc-600 flex-1 min-h-0 flex flex-col overflow-hidden">
+              <div className="flex items-center justify-between mb-4 shrink-0">
+                <div className="flex items-center gap-2">
+                  <div className="w-2 h-2 rounded-full bg-emerald-500"></div>
+                  <h4 className="text-sm font-semibold text-white">Neuronpedia</h4>
+                </div>
+                {neuronpediaData?.neuronpedia_url && (
+                  <a
+                    href={neuronpediaData.neuronpedia_url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-xs text-blue-400 hover:text-blue-300 flex items-center gap-1.5 px-2 py-1 rounded bg-blue-500/10 hover:bg-blue-500/20 transition-colors"
+                  >
+                    View on Neuronpedia
+                    <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                    </svg>
+                  </a>
+                )}
+              </div>
+
+              {neuronpediaLoading && (
+                <div className="flex items-center justify-center gap-3 text-zinc-300 text-sm py-8">
+                  <svg className="w-5 h-5 animate-spin" fill="none" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                  </svg>
+                  Loading from Neuronpedia...
+                </div>
+              )}
+
+              {neuronpediaError && (
+                <div className="text-red-400 text-sm bg-red-500/10 rounded-lg p-3 border border-red-500/20">
+                  {neuronpediaError}
+                </div>
+              )}
+
+              {neuronpediaData && !neuronpediaLoading && (
+                <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
+                  {/* Feature Description */}
+                  <div className="shrink-0 mb-4">
+                    {neuronpediaData.hasData && neuronpediaData.description ? (
+                      <div className="bg-zinc-900/50 rounded-lg p-3 border border-zinc-700">
+                        <div className="text-xs font-medium text-emerald-400 mb-2 uppercase tracking-wide">Description</div>
+                        <p className="text-sm text-white leading-relaxed">{neuronpediaData.description}</p>
+                      </div>
+                    ) : neuronpediaData.hasData === false ? (
+                      <div className="text-zinc-400 text-sm italic bg-zinc-900/30 rounded-lg p-3 text-center">
+                        No data available for this feature on Neuronpedia.
+                      </div>
+                    ) : (
+                      <div className="text-zinc-400 text-sm italic bg-zinc-900/30 rounded-lg p-3 text-center">
+                        No description available.
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Example Activations */}
+                  {neuronpediaData.activations && neuronpediaData.activations.length > 0 && (
+                    <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
+                      <div className="text-xs font-medium text-cyan-400 mb-3 shrink-0 uppercase tracking-wide">
+                        Example Activations ({neuronpediaData.activations.length})
+                      </div>
+                      <div className="flex-1 min-h-0 overflow-y-auto space-y-3 pr-1">
+                        {neuronpediaData.activations.map((act, idx) => {
+                          // Filter out special tokens
+                          const specialTokens = new Set(['<bos>', '<eos>', '<pad>', '<start_of_turn>', '<end_of_turn>', '<sep>', '<cls>', '<mask>']);
+                          const filteredTokens = act.tokens
+                            .map((token, i) => ({ token, value: act.values[i] || 0, originalIdx: i }))
+                            .filter(t => !specialTokens.has(t.token.trim()));
+
+                          // Find max among filtered tokens
+                          const maxFiltered = filteredTokens.reduce((max, t) => t.value > max.value ? t : max, { value: 0, originalIdx: -1 });
+
+                          return (
+                            <div key={idx} className="bg-zinc-900/70 rounded-lg p-3 border border-zinc-700/50">
+                              <p className="text-sm leading-relaxed">
+                                {filteredTokens.map((t, tokenIdx) => {
+                                  const maxVal = act.maxValue || maxFiltered.value || 1;
+                                  const intensity = maxVal > 0 ? Math.min(t.value / maxVal, 1) : 0;
+                                  // Check if this is the max token (either by original index or highest value among filtered)
+                                  const isMax = t.value > 0 && (t.originalIdx === act.maxTokenIndex || t.value === maxFiltered.value);
+
+                                  // Clean up token display - handle subword tokens with space markers
+                                  // ▁ = SentencePiece, Ġ = GPT-2 BPE, · = Neuronpedia display format
+                                  let displayToken = t.token;
+                                  const needsSpaceBefore = displayToken.startsWith('▁') ||
+                                                           displayToken.startsWith('Ġ') ||
+                                                           displayToken.startsWith('·') ||
+                                                           displayToken.startsWith(' ');
+                                  if (needsSpaceBefore) {
+                                    displayToken = displayToken.slice(1);
+                                  }
+
+                                  // Check for newline tokens
+                                  const isNewline = displayToken === '\\n' ||
+                                                    displayToken === '\n' ||
+                                                    displayToken === '<0x0A>' ||
+                                                    displayToken === '<newline>' ||
+                                                    displayToken === '⏎';
+
+                                  if (isNewline) {
+                                    return <br key={tokenIdx} />;
+                                  }
+
+                                  return (
+                                    <span key={tokenIdx}>
+                                      {needsSpaceBefore && tokenIdx > 0 && ' '}
+                                      <span
+                                        className={`rounded-sm ${
+                                          isMax
+                                            ? "bg-yellow-400/70 text-yellow-50 font-semibold px-0.5 py-0.5"
+                                            : intensity > 0.3
+                                            ? "bg-orange-500/60 text-orange-50 px-0.5"
+                                            : intensity > 0.05
+                                            ? "bg-zinc-500/50 text-zinc-100"
+                                            : "text-zinc-300"
+                                        }`}
+                                        title={`"${t.token}" - Activation: ${t.value.toFixed(3)}`}
+                                      >
+                                        {displayToken}
+                                      </span>
+                                    </span>
+                                  );
+                                })}
+                              </p>
+                              <div className="mt-2 text-xs text-zinc-500">
+                                Max activation: <span className="text-yellow-300 font-mono">{act.maxValue.toFixed(3)}</span>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
 
-            {/* Occurrences Table */}
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="text-left text-zinc-400 text-xs">
-                    <th className="pb-2 pr-4">Layer</th>
-                    <th className="pb-2 pr-4">Token</th>
-                    <th className="pb-2 pr-4">Position</th>
-                    <th className="pb-2">Activation</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {selectedFeatureData.occurrences.map((occ, idx) => (
-                    <tr
-                      key={idx}
-                      className="border-t border-zinc-800 hover:bg-zinc-800/50 cursor-pointer"
-                      onClick={() => {
-                        useFlowStore.getState().selectToken(occ.tokenIndex);
-                      }}
-                    >
-                      <td className={`py-2 pr-4 ${getLayerTextClass(occ.layer)}`}>
-                        {occ.layer}
-                      </td>
-                      <td className="py-2 pr-4 font-mono text-zinc-300">
-                        {occ.token.replace(/ /g, "·")}
-                      </td>
-                      <td className="py-2 pr-4 text-zinc-500">{occ.tokenIndex}</td>
-                      <td className="py-2 font-mono text-zinc-300">
-                        {occ.activation.toFixed(4)}
-                      </td>
+            {/* Feature Occurrences */}
+            <div className="shrink-0">
+              <div className="text-xs text-zinc-400 mb-2">
+                Found in {selectedFeatureData.occurrences.length} position(s)
+              </div>
+
+              {/* Occurrences Table */}
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="text-left text-zinc-400 text-xs">
+                      <th className="pb-2 pr-4">Layer</th>
+                      <th className="pb-2 pr-4">Token</th>
+                      <th className="pb-2 pr-4">Position</th>
+                      <th className="pb-2">Activation</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody>
+                    {selectedFeatureData.occurrences.slice(0, 10).map((occ, idx) => (
+                      <tr
+                        key={idx}
+                        className="border-t border-zinc-800 hover:bg-zinc-800/50 cursor-pointer"
+                        onClick={() => {
+                          useFlowStore.getState().selectToken(occ.tokenIndex);
+                        }}
+                      >
+                        <td className={`py-2 pr-4 ${getLayerTextClass(occ.layer)}`}>
+                          {occ.layer}
+                        </td>
+                        <td className="py-2 pr-4 font-mono text-zinc-300">
+                          {occ.token.replace(/ /g, "·")}
+                        </td>
+                        <td className="py-2 pr-4 text-zinc-500">{occ.tokenIndex}</td>
+                        <td className="py-2 font-mono text-zinc-300">
+                          {occ.activation.toFixed(4)}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             </div>
           </div>
         )}

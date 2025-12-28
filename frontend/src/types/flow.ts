@@ -32,6 +32,22 @@ export const LAYER_BG_CLASSES: Record<AvailableLayer, string> = {
   29: "bg-green-500/10",
 };
 
+// Full background classes for selected states (Tailwind JIT requires static classes)
+export const LAYER_BG_SELECTED_CLASSES: Record<AvailableLayer, string> = {
+  9: "bg-purple-500/20",
+  17: "bg-blue-500/20",
+  22: "bg-cyan-500/20",
+  29: "bg-green-500/20",
+};
+
+// Solid background classes for checkboxes
+export const LAYER_CHECKBOX_CLASSES: Record<AvailableLayer, string> = {
+  9: "bg-purple-500 border-purple-500",
+  17: "bg-blue-500 border-blue-500",
+  22: "bg-cyan-500 border-cyan-500",
+  29: "bg-green-500 border-green-500",
+};
+
 // ============================================================================
 // VRAM Status Types
 // ============================================================================
@@ -202,6 +218,14 @@ export function getLayerBorderClass(layer: number): string {
 
 export function getLayerBgClass(layer: number): string {
   return LAYER_BG_CLASSES[layer as AvailableLayer] || "bg-gray-500/10";
+}
+
+export function getLayerBgSelectedClass(layer: number): string {
+  return LAYER_BG_SELECTED_CLASSES[layer as AvailableLayer] || "bg-gray-500/20";
+}
+
+export function getLayerCheckboxClass(layer: number): string {
+  return LAYER_CHECKBOX_CLASSES[layer as AvailableLayer] || "bg-gray-500 border-gray-500";
 }
 
 export function isValidLayer(layer: number): layer is AvailableLayer {

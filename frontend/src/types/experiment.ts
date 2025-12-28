@@ -58,9 +58,9 @@ export function createExperiment(
     createdAt: now,
     updatedAt: now,
     model: {
-      name: model?.name ?? "gemma-2-2b",
-      saeRelease: model?.saeRelease ?? "gemma-scope-2b-pt-res",
-      saeId: model?.saeId ?? "layer_20/width_16k/average_l0_71",
+      name: model?.name ?? "gemma-3-4b-it",
+      saeRelease: model?.saeRelease ?? "gemma-scope-3-4b-it",
+      saeId: model?.saeId ?? "layer_17/width_65k/average_l0_medium",
     },
     steering: {
       features: [],

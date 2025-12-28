@@ -6,6 +6,7 @@ import uuid
 from fastapi import APIRouter, HTTPException
 from sse_starlette.sse import EventSourceResponse
 import json
+import httpx
 
 logger = logging.getLogger(__name__)
 
@@ -14,6 +15,7 @@ from app.schemas.analysis import (
     AnalyzeResponse,
     GenerateRequest,
     GenerateResponse,
+    NormalizationMode,
     # Multi-layer analysis
     MultiLayerAnalyzeRequest,
     MultiLayerAnalyzeResponse,
@@ -35,6 +37,11 @@ from app.schemas.analysis import (
     LayerActivations,
     TokenActivations,
     FeatureActivation,
+    # Neuronpedia
+    NeuronpediaFeatureRequest,
+    NeuronpediaFeatureResponse,
+    NeuronpediaActivation,
+    NeuronpediaExplanation,
 )
 from app.inference.analysis import analyze_prompt
 from app.inference.steering import (
@@ -102,9 +109,13 @@ async def analyze(request: AnalyzeRequest):
 @router.post("/generate", response_model=GenerateResponse)
 async def generate(request: GenerateRequest):
     """
-    Generate text with optional steering.
+    Generate text with optional steering and norm preservation.
 
     If include_baseline is True, generates both baseline and steered outputs.
+    Supports three normalization modes:
+    - none: Raw steering without normalization
+    - preserve_norm: Rescale output to maintain original activation norm
+    - clamp: Allow bounded norm changes within a factor
     """
     try:
         if request.include_baseline and request.steering:
@@ -113,12 +124,17 @@ async def generate(request: GenerateRequest):
                 steering_features=request.steering,
                 max_tokens=request.max_tokens,
                 temperature=request.temperature,
+                normalization=request.normalization,
+                norm_clamp_factor=request.norm_clamp_factor,
+                unit_normalize=request.unit_normalize,
             )
             return GenerateResponse(
                 prompt=request.prompt,
                 baseline_output=baseline,
                 steered_output=steered,
                 steering_config=request.steering,
+                normalization=request.normalization,
+                unit_normalize=request.unit_normalize,
             )
         else:
             output = generate_with_steering(
@@ -126,12 +142,17 @@ async def generate(request: GenerateRequest):
                 steering_features=request.steering,
                 max_tokens=request.max_tokens,
                 temperature=request.temperature,
+                normalization=request.normalization,
+                norm_clamp_factor=request.norm_clamp_factor,
+                unit_normalize=request.unit_normalize,
             )
             return GenerateResponse(
                 prompt=request.prompt,
                 baseline_output=None,
                 steered_output=output,
                 steering_config=request.steering,
+                normalization=request.normalization,
+                unit_normalize=request.unit_normalize,
             )
     except Exception as e:
         logger.error(f"Generation failed: {e}")
@@ -142,9 +163,10 @@ async def generate(request: GenerateRequest):
 @router.post("/generate/stream")
 async def generate_stream(request: GenerateRequest):
     """
-    Generate text with streaming output via SSE.
+    Generate text with streaming output via SSE and norm preservation.
 
     Each event contains a single token as it is generated.
+    Supports three normalization modes for steering.
     """
 
     async def event_generator():
@@ -154,6 +176,9 @@ async def generate_stream(request: GenerateRequest):
                 steering_features=request.steering,
                 max_tokens=request.max_tokens,
                 temperature=request.temperature,
+                normalization=request.normalization,
+                norm_clamp_factor=request.norm_clamp_factor,
+                unit_normalize=request.unit_normalize,
             ):
                 yield {
                     "event": "token",
@@ -561,3 +586,126 @@ async def analyze_batch_stream(request: BatchAnalyzeRequest):
         }
 
     return EventSourceResponse(event_generator())
+
+
+# =============================================================================
+# Neuronpedia Feature Lookup Endpoints
+# =============================================================================
+
+def build_neuronpedia_layer_id(layer: int, sae_type: str, width: str) -> str:
+    """
+    Build the Neuronpedia layer/SAE identifier.
+
+    Neuronpedia uses format like: "9-gemmascope-res-65k"
+    Adjust this based on how Neuronpedia names Gemma Scope SAEs.
+    """
+    # Map our sae_type to Neuronpedia naming
+    type_map = {
+        "resid_post": "res",
+        "attn_out": "att",
+        "mlp_out": "mlp",
+        "transcoder": "tc",
+    }
+    short_type = type_map.get(sae_type, "res")
+
+    # Gemma Scope 2 SAEs on Neuronpedia use format: layer-gemmascope-type-width
+    return f"{layer}-gemmascope-2-{short_type}-{width}"
+
+
+@router.post("/neuronpedia/feature", response_model=NeuronpediaFeatureResponse)
+async def get_neuronpedia_feature(request: NeuronpediaFeatureRequest):
+    """
+    Fetch feature information from Neuronpedia.
+
+    Returns feature explanations and example activations from Neuronpedia's database.
+    """
+    settings = get_settings()
+
+    if not settings.neuronpedia_api_key:
+        raise HTTPException(
+            status_code=500,
+            detail="Neuronpedia API key not configured. Add NEURONPEDIA_API_KEY to .env file."
+        )
+
+    # Build the Neuronpedia identifiers
+    model_id = settings.neuronpedia_model_id
+    layer_id = build_neuronpedia_layer_id(request.layer, settings.sae_type, settings.sae_width)
+
+    # Construct the API URL
+    api_url = f"{settings.neuronpedia_base_url}/feature/{model_id}/{layer_id}/{request.feature_id}"
+    neuronpedia_url = f"https://www.neuronpedia.org/{model_id}/{layer_id}/{request.feature_id}"
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.get(
+                api_url,
+                headers={
+                    "x-api-key": settings.neuronpedia_api_key,
+                    "Accept": "application/json",
+                }
+            )
+
+            if response.status_code == 404:
+                # Feature not found in Neuronpedia
+                return NeuronpediaFeatureResponse(
+                    modelId=model_id,
+                    layer=layer_id,
+                    index=request.feature_id,
+                    description=None,
+                    explanations=[],
+                    activations=[],
+                    neuronpedia_url=neuronpedia_url,
+                    hasData=False,
+                )
+
+            response.raise_for_status()
+            data = response.json()
+
+            # Parse explanations
+            explanations = []
+            if "explanations" in data and data["explanations"]:
+                for exp in data["explanations"]:
+                    explanations.append(NeuronpediaExplanation(
+                        description=exp.get("description", ""),
+                        explanationType=exp.get("explanationType", ""),
+                        typeName=exp.get("typeName"),
+                        explanationModelName=exp.get("explanationModelName"),
+                        score=exp.get("score"),
+                    ))
+
+            # Parse activations
+            activations = []
+            if "activations" in data and data["activations"]:
+                for act in data["activations"]:
+                    activations.append(NeuronpediaActivation(
+                        tokens=act.get("tokens", []),
+                        values=act.get("values", []),
+                        maxValue=act.get("maxValue", 0.0),
+                        maxTokenIndex=act.get("maxTokenIndex", 0),
+                    ))
+
+            # Get the primary description (first explanation)
+            description = None
+            if explanations:
+                description = explanations[0].description
+
+            return NeuronpediaFeatureResponse(
+                modelId=model_id,
+                layer=layer_id,
+                index=request.feature_id,
+                description=description,
+                explanations=explanations,
+                activations=activations,
+                neuronpedia_url=neuronpedia_url,
+                hasData=True,
+            )
+
+    except httpx.TimeoutException:
+        raise HTTPException(status_code=504, detail="Neuronpedia API request timed out")
+    except httpx.HTTPStatusError as e:
+        logger.error(f"Neuronpedia API error: {e}")
+        raise HTTPException(status_code=e.response.status_code, detail=f"Neuronpedia API error: {e}")
+    except Exception as e:
+        logger.error(f"Failed to fetch from Neuronpedia: {e}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"Failed to fetch feature info: {str(e)}")

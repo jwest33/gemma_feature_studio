@@ -5,6 +5,8 @@ import type {
   GenerateResponse,
   ModelInfo,
   HealthStatus,
+  NeuronpediaFeatureRequest,
+  NeuronpediaFeatureResponse,
 } from "@/types/analysis";
 
 import type {
@@ -253,4 +255,17 @@ export async function* analyzeBatchStream(
       }
     }
   }
+}
+
+// =============================================================================
+// Neuronpedia Feature Lookup
+// =============================================================================
+
+export async function getNeuronpediaFeature(
+  request: NeuronpediaFeatureRequest
+): Promise<NeuronpediaFeatureResponse> {
+  return fetchJson<NeuronpediaFeatureResponse>("/neuronpedia/feature", {
+    method: "POST",
+    body: JSON.stringify(request),
+  });
 }

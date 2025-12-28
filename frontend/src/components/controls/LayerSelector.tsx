@@ -1,11 +1,15 @@
 "use client";
 
 import { useFlowStore } from "@/state/flowStore";
-import {
-  AVAILABLE_LAYERS,
-  getLayerColor,
-  getLayerBorderClass,
-} from "@/types/flow";
+import { AVAILABLE_LAYERS } from "@/types/flow";
+
+// Hex colors matching FlowVisualization for consistency
+const LAYER_HEX_COLORS: Record<number, string> = {
+  9: "#a855f7",   // purple-500
+  17: "#3b82f6",  // blue-500
+  22: "#06b6d4",  // cyan-500
+  29: "#22c55e",  // green-500
+};
 
 interface LayerSelectorProps {
   disabled?: boolean;
@@ -22,8 +26,7 @@ export function LayerSelector({ disabled = false }: LayerSelectorProps) {
         {AVAILABLE_LAYERS.map((layer) => {
           const isSelected = selectedLayers.includes(layer);
           const isLoaded = loadedLayers.includes(layer);
-          const color = getLayerColor(layer);
-          const borderClass = getLayerBorderClass(layer);
+          const color = LAYER_HEX_COLORS[layer] || "#888";
 
           return (
             <label
@@ -32,12 +35,12 @@ export function LayerSelector({ disabled = false }: LayerSelectorProps) {
                 flex items-center gap-2 px-3 py-1.5 rounded-md cursor-pointer
                 transition-all duration-150
                 ${disabled ? "opacity-50 cursor-not-allowed" : ""}
-                ${
-                  isSelected
-                    ? `bg-${color}-500/20 ${borderClass} border`
-                    : "bg-zinc-800/50 border border-zinc-700 hover:border-zinc-500"
-                }
+                ${!isSelected ? "bg-zinc-800/50 border border-zinc-700 hover:border-zinc-500" : "border"}
               `}
+              style={isSelected ? {
+                backgroundColor: `${color}20`,
+                borderColor: color,
+              } : undefined}
             >
               <input
                 type="checkbox"
@@ -47,15 +50,13 @@ export function LayerSelector({ disabled = false }: LayerSelectorProps) {
                 className="sr-only"
               />
               <span
-                className={`
-                  w-3 h-3 rounded-sm border-2 flex items-center justify-center
-                  transition-colors
-                  ${
-                    isSelected
-                      ? `bg-${color}-500 border-${color}-500`
-                      : "border-zinc-500"
-                  }
-                `}
+                className="w-3 h-3 rounded-sm border-2 flex items-center justify-center transition-colors"
+                style={isSelected ? {
+                  backgroundColor: color,
+                  borderColor: color,
+                } : {
+                  borderColor: "#71717a",
+                }}
               >
                 {isSelected && (
                   <svg

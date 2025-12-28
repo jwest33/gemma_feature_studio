@@ -1,7 +1,7 @@
 "use client";
 
-import { useMemo, useRef, useState } from "react";
-import { useFlowStore } from "@/state/flowStore";
+import { useMemo, useRef, useState, useCallback, useEffect, useLayoutEffect } from "react";
+import { useFlowStore, type FlowFilters } from "@/state/flowStore";
 import type { LayerActivations } from "@/types/analysis";
 import { createActivationScale, getContrastColor } from "@/lib/colorScale";
 import {
@@ -16,6 +16,7 @@ import {
 
 interface FlowVisualizationProps {
   generatedOutput?: string;
+  baselineOutput?: string;
   isGenerating?: boolean;
 }
 
@@ -48,6 +49,7 @@ const LAYOUT = {
   headerHeight: 40,
   padding: 16,
   outputColumnWidth: 200,
+  outputColumnWidthComparison: 400, // Wider when showing comparison
 };
 
 const LAYER_HEX_COLORS: Record<number, string> = {
@@ -454,16 +456,20 @@ function LayerHeader({ layer, x, enabled, featureCount }: LayerHeaderProps) {
 
 interface OutputPanelProps {
   output?: string;
+  baselineOutput?: string;
   isGenerating?: boolean;
   isSelected?: boolean;
   onSelect?: () => void;
   x: number;
   height: number;
+  width: number;
 }
 
-function OutputPanel({ output, isGenerating, isSelected, onSelect, x, height }: OutputPanelProps) {
+function OutputPanel({ output, baselineOutput, isGenerating, isSelected, onSelect, x, height, width }: OutputPanelProps) {
+  const hasComparison = baselineOutput && output;
+
   return (
-    <foreignObject x={x} y={LAYOUT.padding} width={LAYOUT.outputColumnWidth} height={height}>
+    <foreignObject x={x} y={LAYOUT.padding} width={width} height={height}>
       <div
         className={`h-full border-2 rounded-lg bg-green-500/5 overflow-hidden flex flex-col cursor-pointer transition-all ${
           isSelected ? "border-green-400 ring-2 ring-green-400/50" : "border-green-500/50 hover:border-green-400/70"
@@ -475,26 +481,152 @@ function OutputPanel({ output, isGenerating, isSelected, onSelect, x, height }: 
       >
         <div className="px-3 py-2 border-b border-green-500/50 bg-green-500/10 shrink-0">
           <span className="text-sm font-medium text-green-300">
-            Generated Output
+            {hasComparison ? "Steering Comparison" : "Generated Output"}
             {isGenerating && (
               <span className="ml-2 inline-block w-2 h-2 bg-green-400 rounded-full animate-pulse" />
             )}
             {isSelected && (
-              <span className="ml-2 text-xs text-green-400">(click to copy below)</span>
+              <span className="ml-2 text-xs text-green-400">(details below)</span>
             )}
           </span>
         </div>
-        <div className="flex-1 p-3 overflow-y-auto">
-          {output ? (
-            <p className="text-sm text-zinc-300 whitespace-pre-wrap">{output}</p>
+        <div className="flex-1 overflow-y-auto">
+          {hasComparison ? (
+            // Side-by-side comparison view
+            <div className="flex h-full divide-x divide-zinc-700">
+              {/* Baseline */}
+              <div className="flex-1 flex flex-col min-w-0">
+                <div className="px-2 py-1.5 bg-zinc-800/50 border-b border-zinc-700 shrink-0">
+                  <span className="text-xs text-zinc-400 font-medium">Baseline</span>
+                </div>
+                <div className="flex-1 p-2 overflow-y-auto">
+                  <p className="text-xs text-zinc-400 whitespace-pre-wrap leading-relaxed">{baselineOutput}</p>
+                </div>
+              </div>
+              {/* Steered */}
+              <div className="flex-1 flex flex-col min-w-0">
+                <div className="px-2 py-1.5 bg-green-500/10 border-b border-green-500/30 shrink-0">
+                  <span className="text-xs text-green-400 font-medium">Steered</span>
+                </div>
+                <div className="flex-1 p-2 overflow-y-auto">
+                  <p className="text-xs text-zinc-200 whitespace-pre-wrap leading-relaxed">{output}</p>
+                </div>
+              </div>
+            </div>
+          ) : output ? (
+            <div className="p-3">
+              <p className="text-sm text-zinc-300 whitespace-pre-wrap">{output}</p>
+            </div>
           ) : (
-            <p className="text-sm text-zinc-500 italic">
-              {isGenerating ? "Generating..." : "Output will appear here after generation"}
-            </p>
+            <div className="p-3">
+              <p className="text-sm text-zinc-500 italic">
+                {isGenerating ? "Generating..." : "Output will appear here after generation"}
+              </p>
+            </div>
           )}
         </div>
       </div>
     </foreignObject>
+  );
+}
+
+// ============================================================================
+// Filter Controls Component
+// ============================================================================
+
+interface FilterControlsProps {
+  filters: FlowFilters;
+  maxActivation: number;
+  onMinActivationChange: (value: number) => void;
+  onMinTokenCountChange: (value: number) => void;
+  onReset: () => void;
+  totalFeatures: number;
+  visibleFeatures: number;
+}
+
+function FilterControls({
+  filters,
+  maxActivation,
+  onMinActivationChange,
+  onMinTokenCountChange,
+  onReset,
+  totalFeatures,
+  visibleFeatures,
+}: FilterControlsProps) {
+  const hiddenCount = totalFeatures - visibleFeatures;
+  const hasActiveFilters = filters.minActivation > 0 || filters.minTokenCount > 1;
+
+  return (
+    <div className="flex flex-col gap-2 p-3 bg-zinc-900/95 border border-zinc-700 rounded-lg shadow-lg min-w-[200px]">
+      <div className="flex items-center justify-between text-xs text-zinc-400 mb-1">
+        <span className="font-medium">Filters</span>
+        {hasActiveFilters && (
+          <button
+            onClick={onReset}
+            className="text-zinc-500 hover:text-zinc-300 underline"
+          >
+            Reset
+          </button>
+        )}
+      </div>
+
+      {/* Activation Strength Filter */}
+      <div className="flex flex-col gap-1">
+        <label className="text-[10px] text-zinc-500 uppercase tracking-wide">
+          Min Activation
+        </label>
+        <div className="flex items-center gap-2">
+          <input
+            type="range"
+            min={0}
+            max={maxActivation}
+            step={maxActivation / 100}
+            value={filters.minActivation}
+            onChange={(e) => onMinActivationChange(parseFloat(e.target.value))}
+            className="flex-1 h-1 bg-zinc-700 rounded-lg appearance-none cursor-pointer accent-blue-500"
+          />
+          <span className="text-xs text-zinc-400 w-12 text-right font-mono">
+            {filters.minActivation.toFixed(2)}
+          </span>
+        </div>
+      </div>
+
+      {/* Token Count Filter */}
+      <div className="flex flex-col gap-1">
+        <label className="text-[10px] text-zinc-500 uppercase tracking-wide">
+          Min Token Count
+        </label>
+        <div className="flex items-center gap-2">
+          <input
+            type="range"
+            min={1}
+            max={10}
+            step={1}
+            value={filters.minTokenCount}
+            onChange={(e) => onMinTokenCountChange(parseInt(e.target.value))}
+            className="flex-1 h-1 bg-zinc-700 rounded-lg appearance-none cursor-pointer accent-blue-500"
+          />
+          <span className="text-xs text-zinc-400 w-12 text-right font-mono">
+            {filters.minTokenCount}+
+          </span>
+        </div>
+      </div>
+
+      {/* Feature count info */}
+      <div className="text-[10px] text-zinc-500 pt-1 border-t border-zinc-800">
+        {hiddenCount > 0 ? (
+          <span>
+            Showing <span className="text-zinc-300">{visibleFeatures}</span> of{" "}
+            <span className="text-zinc-300">{totalFeatures}</span> features
+            <span className="text-zinc-600"> ({hiddenCount} hidden)</span>
+          </span>
+        ) : (
+          <span>
+            Showing all <span className="text-zinc-300">{totalFeatures}</span> features
+          </span>
+        )}
+      </div>
+    </div>
   );
 }
 
@@ -516,7 +648,7 @@ const ZOOM_SENSITIVITY = 0.001;
 // Main Flow Visualization Component
 // ============================================================================
 
-export function FlowVisualization({ generatedOutput, isGenerating }: FlowVisualizationProps) {
+export function FlowVisualization({ generatedOutput, baselineOutput, isGenerating }: FlowVisualizationProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
   const [hoveredToken, setHoveredToken] = useState<number | null>(null);
@@ -526,16 +658,28 @@ export function FlowVisualization({ generatedOutput, isGenerating }: FlowVisuali
   const [transform, setTransform] = useState<Transform>({ x: 0, y: 0, scale: 1 });
   const [isPanning, setIsPanning] = useState(false);
   const [panStart, setPanStart] = useState({ x: 0, y: 0 });
+  const [hasAutocentered, setHasAutocentered] = useState(false);
 
-  const { selectedLayers, selection, selectToken, selectFeature, selectOutput } = useFlowStore();
+  const {
+    selectedLayers,
+    selection,
+    selectToken,
+    selectFeature,
+    selectOutput,
+    filters,
+    setMinActivation,
+    setMinTokenCount,
+    resetFilters,
+  } = useFlowStore();
   const activePrompt = useFlowStore((state) => state.getActivePrompt());
+  const [showFilters, setShowFilters] = useState(false);
 
   // Get layer data from active prompt
   const layerDataMap = activePrompt?.layerData ?? new Map<number, LayerActivations>();
   const tokens = activePrompt?.tokens ?? [];
 
-  // Compute deduplicated features per layer
-  const layerFlowData = useMemo(() => {
+  // Compute deduplicated features per layer (unfiltered for counting)
+  const unfilteredLayerFlowData = useMemo(() => {
     const data: LayerFlowData[] = [];
 
     selectedLayers.forEach((layer) => {
@@ -547,6 +691,37 @@ export function FlowVisualization({ generatedOutput, isGenerating }: FlowVisuali
 
     return data.sort((a, b) => a.layer - b.layer);
   }, [layerDataMap, selectedLayers]);
+
+  // Apply filters to layer flow data
+  const layerFlowData = useMemo(() => {
+    return unfilteredLayerFlowData.map((layer) => ({
+      ...layer,
+      features: layer.features.filter((feature) => {
+        // Filter by minimum activation strength
+        if (feature.maxActivation < filters.minActivation) {
+          return false;
+        }
+        // Filter by minimum token count
+        if (feature.activations.length < filters.minTokenCount) {
+          return false;
+        }
+        return true;
+      }),
+    }));
+  }, [unfilteredLayerFlowData, filters]);
+
+  // Count total and visible features for filter UI
+  const featureCounts = useMemo(() => {
+    const total = unfilteredLayerFlowData.reduce(
+      (sum, layer) => sum + layer.features.length,
+      0
+    );
+    const visible = layerFlowData.reduce(
+      (sum, layer) => sum + layer.features.length,
+      0
+    );
+    return { total, visible };
+  }, [unfilteredLayerFlowData, layerFlowData]);
 
   // Find max activation across all layers for consistent coloring
   const globalMaxActivation = useMemo(() => {
@@ -596,6 +771,12 @@ export function FlowVisualization({ generatedOutput, isGenerating }: FlowVisuali
     return positions;
   }, [layerFlowData, selectedLayers]);
 
+  // Calculate dynamic output panel width
+  const hasComparison = Boolean(baselineOutput && generatedOutput);
+  const outputPanelWidth = hasComparison
+    ? LAYOUT.outputColumnWidthComparison
+    : LAYOUT.outputColumnWidth;
+
   // Calculate SVG dimensions
   const svgDimensions = useMemo(() => {
     const sortedLayers = [...selectedLayers].sort((a, b) => a - b);
@@ -606,7 +787,7 @@ export function FlowVisualization({ generatedOutput, isGenerating }: FlowVisuali
       LAYOUT.tokenColumnWidth +
       LAYOUT.layerGap +
       sortedLayers.length * (LAYOUT.layerColumnWidth + LAYOUT.layerGap) +
-      LAYOUT.outputColumnWidth;
+      outputPanelWidth;
 
     const height =
       LAYOUT.headerHeight +
@@ -617,7 +798,7 @@ export function FlowVisualization({ generatedOutput, isGenerating }: FlowVisuali
       );
 
     return { width: Math.max(800, width), height: Math.max(400, height) };
-  }, [tokens.length, layerFlowData, selectedLayers]);
+  }, [tokens.length, layerFlowData, selectedLayers, outputPanelWidth]);
 
   // Output column position
   const outputX = useMemo(() => {
@@ -678,10 +859,42 @@ export function FlowVisualization({ generatedOutput, isGenerating }: FlowVisuali
     setTransform({ x: newX, y: newY, scale: newScale });
   };
 
+  // Center the view on content
+  const centerView = useCallback(() => {
+    if (!containerRef.current) return;
+
+    const containerRect = containerRef.current.getBoundingClientRect();
+    const contentWidth = svgDimensions.width;
+    const contentHeight = svgDimensions.height;
+
+    // Calculate centering offset
+    const x = (containerRect.width - contentWidth) / 2;
+    const y = (containerRect.height - contentHeight) / 2;
+
+    setTransform({ x: Math.max(0, x), y: Math.max(0, y), scale: 1 });
+  }, [svgDimensions.width, svgDimensions.height]);
+
   // Reset view handler
-  const resetView = () => {
-    setTransform({ x: 0, y: 0, scale: 1 });
-  };
+  const resetView = useCallback(() => {
+    centerView();
+  }, [centerView]);
+
+  // Auto-center on initial data load
+  useEffect(() => {
+    if (tokens.length > 0 && layerFlowData.length > 0 && !hasAutocentered) {
+      // Small delay to ensure container is sized
+      const timer = setTimeout(() => {
+        centerView();
+        setHasAutocentered(true);
+      }, 50);
+      return () => clearTimeout(timer);
+    }
+  }, [tokens.length, layerFlowData.length, hasAutocentered, centerView]);
+
+  // Reset autocenter flag when prompt changes
+  useEffect(() => {
+    setHasAutocentered(false);
+  }, [activePrompt?.id]);
 
   if (!activePrompt || tokens.length === 0) {
     return (
@@ -696,10 +909,34 @@ export function FlowVisualization({ generatedOutput, isGenerating }: FlowVisuali
 
   const sortedLayers = [...selectedLayers].sort((a, b) => a - b);
 
+  const hasActiveFilters = filters.minActivation > 0 || filters.minTokenCount > 1;
+
   return (
     <div ref={containerRef} className="h-full overflow-hidden relative">
-      {/* Zoom controls */}
+      {/* Control bar */}
       <div className="absolute top-4 right-4 z-10 flex gap-2">
+        {/* Filter toggle */}
+        <button
+          onClick={() => setShowFilters(!showFilters)}
+          className={`px-2 h-8 rounded flex items-center justify-center text-xs border gap-1.5 transition-colors ${
+            showFilters || hasActiveFilters
+              ? "bg-blue-600/20 text-blue-400 border-blue-500/50 hover:bg-blue-600/30"
+              : "bg-zinc-800 text-zinc-300 border-zinc-700 hover:bg-zinc-700"
+          }`}
+          title="Toggle filters"
+        >
+          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z" />
+          </svg>
+          Filters
+          {hasActiveFilters && (
+            <span className="w-1.5 h-1.5 bg-blue-400 rounded-full" />
+          )}
+        </button>
+
+        <div className="w-px h-8 bg-zinc-700" />
+
+        {/* Zoom controls */}
         <button
           onClick={() => setTransform((prev) => ({ ...prev, scale: Math.min(MAX_ZOOM, prev.scale * 1.2) }))}
           className="w-8 h-8 bg-zinc-800 hover:bg-zinc-700 rounded flex items-center justify-center text-zinc-300 border border-zinc-700"
@@ -729,6 +966,21 @@ export function FlowVisualization({ generatedOutput, isGenerating }: FlowVisuali
           {Math.round(transform.scale * 100)}%
         </span>
       </div>
+
+      {/* Filter controls panel */}
+      {showFilters && (
+        <div className="absolute top-16 right-4 z-10">
+          <FilterControls
+            filters={filters}
+            maxActivation={globalMaxActivation}
+            onMinActivationChange={setMinActivation}
+            onMinTokenCountChange={setMinTokenCount}
+            onReset={resetFilters}
+            totalFeatures={featureCounts.total}
+            visibleFeatures={featureCounts.visible}
+          />
+        </div>
+      )}
 
       {/* SVG Canvas */}
       <svg
@@ -843,11 +1095,13 @@ export function FlowVisualization({ generatedOutput, isGenerating }: FlowVisuali
           {/* Output panel */}
           <OutputPanel
             output={generatedOutput}
+            baselineOutput={baselineOutput}
             isGenerating={isGenerating}
             isSelected={selection.showOutput}
             onSelect={selectOutput}
             x={outputX}
             height={svgDimensions.height - LAYOUT.padding * 2}
+            width={outputPanelWidth}
           />
         </g>
       </svg>

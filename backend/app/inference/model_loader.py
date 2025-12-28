@@ -692,7 +692,20 @@ class ModelManager:
         settings = get_settings()
         device = settings.device
 
-        input_ids = self.get_token_ids(prompt).to(device)
+        # Apply chat template for Gemma model
+        messages = [{"role": "user", "content": prompt}]
+        formatted_prompt = self._tokenizer.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=True
+        )
+
+        # Tokenize the formatted prompt
+        input_ids = self._tokenizer.encode(
+            formatted_prompt,
+            return_tensors="pt",
+            add_special_tokens=True
+        ).to(device)
 
         # Create steering vector from features
         steering_vector = torch.zeros(self._sae.d_in, device=device, dtype=self._model.dtype)
@@ -716,6 +729,12 @@ class ModelManager:
         target_layer = self._get_target_layer()
         hook = target_layer.register_forward_hook(steering_hook)
 
+        # Get stop token IDs (EOS and end_of_turn for Gemma chat)
+        stop_token_ids = [self._tokenizer.eos_token_id]
+        end_of_turn_ids = self._tokenizer.encode("<end_of_turn>", add_special_tokens=False)
+        if end_of_turn_ids:
+            stop_token_ids.append(end_of_turn_ids[0])
+
         try:
             with torch.no_grad():
                 outputs = self._model.generate(
@@ -724,12 +743,13 @@ class ModelManager:
                     temperature=temperature,
                     do_sample=temperature > 0,
                     pad_token_id=self._tokenizer.eos_token_id,
+                    eos_token_id=stop_token_ids,
                 )
 
-            generated_text = self._tokenizer.decode(outputs[0], skip_special_tokens=True)
-            # Remove the prompt from the output
-            if generated_text.startswith(prompt):
-                generated_text = generated_text[len(prompt):]
+            # Decode only the newly generated tokens (skip the input prompt)
+            input_length = input_ids.shape[1]
+            generated_tokens = outputs[0][input_length:]
+            generated_text = self._tokenizer.decode(generated_tokens, skip_special_tokens=True)
             return generated_text
         finally:
             hook.remove()

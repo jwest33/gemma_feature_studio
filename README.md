@@ -1,6 +1,11 @@
-# LM Feature Studio
+<div align="center">
+  <h1>Gemma Feature Studio</h1>
+  <p>Gemma-3 SAE Analysis and Steering System built with Gemma-Scope-2, SAE-Lens, and React.</p>
 
-A state-of-the-art Gemma-3 SAE Analysis and Steering System built with Gemma-Scope-2, SAELens, and React.
+  [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+  [![Gemma-Scope-2](https://img.shields.io/badge/Gemma--Scope--2-Google-blue.svg)](https://huggingface.co/google/gemma-scope-2)
+</div>
+
 
 ## Features
 

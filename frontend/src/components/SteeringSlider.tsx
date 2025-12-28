@@ -27,7 +27,7 @@ export function SteeringSlider({
   onRemove,
   min = -2,
   max = 2,
-  step = 0.1,
+  step = 0.01,
   debounceMs = 300,
 }: SteeringSliderProps) {
   const [localValue, setLocalValue] = useState(value);
@@ -121,13 +121,24 @@ export function SteeringSlider({
         </div>
 
         <div className="flex items-center gap-2">
-          <span
-            className="text-sm font-mono px-2 py-0.5 rounded min-w-[60px] text-center"
+          <input
+            type="number"
+            min={min}
+            max={max}
+            step={step}
+            value={localValue}
+            onChange={(e) => {
+              const val = parseFloat(e.target.value);
+              if (!isNaN(val)) {
+                const clamped = Math.max(min, Math.min(max, val));
+                setLocalValue(clamped);
+                debouncedOnChange(clamped);
+              }
+            }}
+            disabled={!enabled}
+            className="text-sm font-mono px-2 py-0.5 rounded min-w-[70px] text-center bg-transparent border-none focus:outline-none focus:ring-1 focus:ring-blue-500 disabled:opacity-50"
             style={{ backgroundColor: getValueColor(localValue) }}
-          >
-            {localValue >= 0 ? "+" : ""}
-            {localValue.toFixed(1)}
-          </span>
+          />
           <button
             onClick={handleReset}
             className="text-zinc-500 hover:text-zinc-300 transition-colors p-1"

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-LM Feature Studio - Development Server Launcher
+Gemma Feature Studio - Development Server Launcher
 
 Starts both the backend (FastAPI) and frontend (Next.js) services.
 Backend starts first and waits for health check before starting frontend.
@@ -144,7 +144,7 @@ def stream_output(process, prefix):
 
 def main():
     print("=" * 60)
-    print("  LM Feature Studio - Development Server")
+    print("  Gemma Feature Studio - Development Server")
     print("=" * 60)
     print()
 

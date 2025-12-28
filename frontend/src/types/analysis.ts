@@ -32,7 +32,10 @@ export interface AnalyzeRequest {
 export interface SteeringFeature {
   feature_id: number;
   coefficient: number;
+  layer?: number | null;
 }
+
+export type NormalizationMode = "none" | "preserve_norm" | "clamp";
 
 export interface GenerateRequest {
   prompt: string;
@@ -40,6 +43,9 @@ export interface GenerateRequest {
   max_tokens?: number;
   temperature?: number;
   include_baseline?: boolean;
+  normalization?: NormalizationMode;
+  norm_clamp_factor?: number;
+  unit_normalize?: boolean;
 }
 
 export interface GenerateResponse {
@@ -47,6 +53,8 @@ export interface GenerateResponse {
   baseline_output: string | null;
   steered_output: string;
   steering_config: SteeringFeature[];
+  normalization?: NormalizationMode;
+  unit_normalize?: boolean;
 }
 
 export interface ModelInfo {
@@ -59,4 +67,36 @@ export interface ModelInfo {
 export interface HealthStatus {
   status: string;
   model_loaded: boolean;
+}
+
+// Neuronpedia Types
+export interface NeuronpediaActivation {
+  tokens: string[];
+  values: number[];
+  maxValue: number;
+  maxTokenIndex: number;
+}
+
+export interface NeuronpediaExplanation {
+  description: string;
+  explanationType: string;
+  typeName?: string | null;
+  explanationModelName?: string | null;
+  score?: number | null;
+}
+
+export interface NeuronpediaFeatureRequest {
+  feature_id: number;
+  layer: number;
+}
+
+export interface NeuronpediaFeatureResponse {
+  modelId: string;
+  layer: string;
+  index: number;
+  description: string | null;
+  explanations: NeuronpediaExplanation[];
+  activations: NeuronpediaActivation[];
+  neuronpedia_url: string;
+  hasData: boolean;
 }

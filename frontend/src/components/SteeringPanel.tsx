@@ -241,7 +241,7 @@ export function SteeringPanel({
             <span className="font-medium text-zinc-400">Active steering: </span>
             {features
               .filter((f) => f.enabled && f.coefficient !== 0)
-              .map((f) => `#${f.id}: ${f.coefficient > 0 ? "+" : ""}${f.coefficient.toFixed(1)}`)
+              .map((f) => `#${f.id}: ${f.coefficient > 0 ? "+" : ""}${f.coefficient.toFixed(2)}`)
               .join(", ") || "None"}
           </div>
         </div>
