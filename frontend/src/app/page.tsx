@@ -111,29 +111,30 @@ export default function Home() {
     abortControllerRef.current = new AbortController();
     setIsGenerating(true);
     setGeneratedOutput("");
-    setBaselineOutput("");
 
     const promptText = activePrompt.text;
 
     try {
-      // First generate baseline (no steering)
-      let baseline = "";
-      const baselineRequest: GenerateRequest = {
-        prompt: promptText,
-        steering: [],
-        max_tokens: 256,
-        normalization: "none",
-      };
+      // Only generate baseline if we don't already have one
+      if (!baselineOutput) {
+        let baseline = "";
+        const baselineRequest: GenerateRequest = {
+          prompt: promptText,
+          steering: [],
+          max_tokens: 256,
+          normalization: "none",
+        };
 
-      for await (const token of generateTextStream(
-        baselineRequest,
-        abortControllerRef.current.signal
-      )) {
-        baseline += token;
-        setBaselineOutput(baseline);
+        for await (const token of generateTextStream(
+          baselineRequest,
+          abortControllerRef.current.signal
+        )) {
+          baseline += token;
+          setBaselineOutput(baseline);
+        }
       }
 
-      // Then generate steered output with all enabled features
+      // Generate steered output with all enabled features
       let steered = "";
       const steeredRequest: GenerateRequest = {
         prompt: promptText,
@@ -167,7 +168,7 @@ export default function Home() {
       setIsGenerating(false);
       abortControllerRef.current = null;
     }
-  }, [activePrompt, steeringFeatures, steeringNormalization, steeringClampFactor, steeringUnitNormalize, selectOutput]);
+  }, [activePrompt, baselineOutput, steeringFeatures, steeringNormalization, steeringClampFactor, steeringUnitNormalize, selectOutput]);
 
   // Handle model configuration changes
   const handleConfigChange = useCallback(async () => {

@@ -172,7 +172,14 @@ class ModelManager:
         """Get complete system status including model and SAEs."""
         runtime_config = get_runtime_config()
         vram = self.get_vram_status()
-        sae_status = self._sae_registry.get_status() if self._sae_registry else {}
+        sae_status = self._sae_registry.get_status() if self._sae_registry else {
+            "loaded_count": 0,
+            "loaded_layers": [],
+            "total_size_mb": 0,
+            "total_size_gb": 0,
+            "max_budget_gb": 0,
+            "entries": [],
+        }
 
         return {
             "model_loaded": self._initialized,
