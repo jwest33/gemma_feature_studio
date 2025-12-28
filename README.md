@@ -8,6 +8,8 @@
   [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
 </div>
 
+![example](./app-example.jpg)
+
 ## Features
 
 - **Feature Activation Analysis**: Visualize which SAE features activate on your input text
