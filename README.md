@@ -15,10 +15,9 @@
 - **Feature Heatmaps**: Interactive heatmaps using visx
 - **Network Visualization**: Interactive React Flow graph of feature activations
 - **Virtualized Feature Lists**: Efficiently browse 64k+ features with react-window
-- **Steering Controls**: Adjust feature coefficients (-2 to +2) to steer model output
+- **Steering Controls**: Adjust feature coefficients to steer model output with multiple normalization modes
 - **Streaming Generation**: Real-time token streaming via SSE
-- **Comparison Panel**: Side-by-side baseline vs steered output with diff view
-- **Experiment Management**: Save, load, export, and import steering experiments
+- **Comparison Panel**: Side-by-side baseline vs steered output (baseline is preserved during coefficient experiments)
 - **Undo/Redo**: Full history for steering coefficient changes (Ctrl+Z/Ctrl+Shift+Z)
 
 ## Architecture
