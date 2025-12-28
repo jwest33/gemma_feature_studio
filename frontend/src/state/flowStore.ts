@@ -398,24 +398,25 @@ export const useFlowStore = create<FlowState>()(
       // ======================================================================
 
       selectToken: (tokenIndex: number | null) => {
-        set((state) => ({
+        set({
           selection: {
-            ...state.selection,
             tokenIndex,
+            featureId: null,
+            layer: null,
             showOutput: false,
           },
-        }));
+        });
       },
 
       selectFeature: (featureId: number | null, layer: number | null) => {
-        set((state) => ({
+        set({
           selection: {
-            ...state.selection,
+            tokenIndex: null,
             featureId,
             layer,
             showOutput: false,
           },
-        }));
+        });
       },
 
       selectOutput: () => {

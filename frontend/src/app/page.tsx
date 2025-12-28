@@ -258,7 +258,7 @@ export default function Home() {
       <header className="border-b border-zinc-800 shrink-0">
         <div className="px-6 py-4 flex items-center justify-between">
           <div>
-            <h1 className="text-xl font-bold text-white">LM Feature Studio</h1>
+            <h1 className="text-xl font-bold text-white">Gemma Feature Studio</h1>
             <p className="text-sm text-zinc-500">
               Multi-Layer SAE Analysis and Feature Steering
             </p>
