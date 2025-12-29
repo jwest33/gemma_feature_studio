@@ -7,7 +7,7 @@ from app.schemas.analysis import (
     LayerActivations,
     AnalyzeResponse,
 )
-from app.core.config import get_settings
+from app.core.config import get_settings, get_runtime_config
 
 
 def analyze_prompt(
@@ -62,8 +62,10 @@ def analyze_prompt(
         )
 
     # Build layer activations
+    runtime_config = get_runtime_config()
+    default_layer = runtime_config.get_default_layer()
     layer_activations = LayerActivations(
-        layer=settings.sae_layer,
+        layer=default_layer,
         hook_point=manager.get_hook_point(),
         token_activations=token_activations,
     )
@@ -72,7 +74,7 @@ def analyze_prompt(
     output_tokens = token_strs[start_pos:]
 
     # Construct SAE ID string
-    sae_id = f"{settings.sae_type}/layer_{settings.sae_layer}_width_{settings.sae_width}_l0_{settings.sae_l0}"
+    sae_id = f"{runtime_config.sae_type}/layer_{default_layer}_width_{runtime_config.sae_width}_l0_{runtime_config.sae_l0}"
 
     return AnalyzeResponse(
         prompt=prompt,

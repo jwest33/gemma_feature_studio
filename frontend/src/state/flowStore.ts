@@ -12,11 +12,11 @@ import type {
   ComparisonSelection,
   MultiLayerAnalyzeResponse,
   LoadSAEResponse,
-  AVAILABLE_LAYERS,
   ModelConfig,
   SAEPreset,
+  ModelSize,
 } from "@/types/flow";
-import { SAE_PRESETS } from "@/types/flow";
+import { SAE_PRESETS, DEFAULT_AVAILABLE_LAYERS, detectModelSize, getLayersForModelSize } from "@/types/flow";
 import type { LayerActivations, NormalizationMode } from "@/types/analysis";
 
 // ============================================================================
@@ -87,6 +87,9 @@ interface FlowState {
   isAnalyzing: boolean;
   analysisProgress: { current: number; total: number } | null;
   analysisError: string | null;
+
+  // Hydration State (for SSR compatibility)
+  _hasHydrated: boolean;
 
   // Selection State
   selection: FlowSelection;
@@ -161,6 +164,7 @@ interface FlowState {
   getPromptById: (id: string) => PromptAnalysis | undefined;
   getComparisonPrompts: () => PromptAnalysis[];
   getLoadedLayers: () => number[];
+  getAvailableLayers: () => number[];
   canAnalyze: () => boolean;
 }
 
@@ -168,7 +172,8 @@ interface FlowState {
 // Available Layers
 // ============================================================================
 
-const ALL_AVAILABLE_LAYERS = [9, 17, 22, 29];
+// Default layers (4B model) - actual layers come from system status
+const DEFAULT_LAYERS = [...DEFAULT_AVAILABLE_LAYERS];
 
 // ============================================================================
 // Store Implementation
@@ -205,6 +210,8 @@ export const useFlowStore = create<FlowState>()(
       isAnalyzing: false,
       analysisProgress: null,
       analysisError: null,
+      // Hydration flag - false until localStorage is loaded
+      _hasHydrated: false,
       selection: {
         tokenIndex: null,
         featureId: null,
@@ -218,9 +225,25 @@ export const useFlowStore = create<FlowState>()(
       // ======================================================================
 
       setModelPath: (path: string) => {
-        set((state) => ({
-          modelConfig: { ...state.modelConfig, modelPath: path },
-        }));
+        set((state) => {
+          // Detect model size from the path
+          const newModelSize = detectModelSize(path);
+          const oldModelSize = detectModelSize(state.modelConfig.modelPath);
+
+          // If model size changed, update selected layers to match new model
+          if (newModelSize !== oldModelSize) {
+            const newLayers = getLayersForModelSize(newModelSize);
+            // Select the first layer of the new model
+            return {
+              modelConfig: { ...state.modelConfig, modelPath: path },
+              selectedLayers: [newLayers[0]],
+            };
+          }
+
+          return {
+            modelConfig: { ...state.modelConfig, modelPath: path },
+          };
+        });
       },
 
       setSaePreset: (presetId: string) => {
@@ -351,11 +374,22 @@ export const useFlowStore = create<FlowState>()(
       },
 
       selectAllLayers: () => {
-        set({ selectedLayers: [...ALL_AVAILABLE_LAYERS] });
+        const { systemStatus, modelConfig } = get();
+        // Use backend layers or fallback to model config detection
+        const availableLayers = (systemStatus?.available_layers && systemStatus.available_layers.length > 0)
+          ? systemStatus.available_layers
+          : getLayersForModelSize(detectModelSize(modelConfig.modelPath));
+        set({ selectedLayers: [...availableLayers] });
       },
 
       clearLayerSelection: () => {
-        set({ selectedLayers: [17] }); // Reset to default
+        const { systemStatus, modelConfig } = get();
+        // Use backend layers or fallback to model config detection
+        const availableLayers = (systemStatus?.available_layers && systemStatus.available_layers.length > 0)
+          ? systemStatus.available_layers
+          : getLayersForModelSize(detectModelSize(modelConfig.modelPath));
+        // Reset to the first available layer
+        set({ selectedLayers: [availableLayers[0]] });
       },
 
       // ======================================================================
@@ -363,7 +397,52 @@ export const useFlowStore = create<FlowState>()(
       // ======================================================================
 
       setSystemStatus: (status: SystemStatus | null) => {
-        set({ systemStatus: status });
+        set((state) => {
+          // If status is null or has no available_layers, just set it
+          if (!status || !status.available_layers || status.available_layers.length === 0) {
+            return { systemStatus: status };
+          }
+
+          const updates: Partial<FlowState> = { systemStatus: status };
+
+          // Sync modelConfig.modelPath with backend's loaded model if they differ
+          // This handles cases where the backend has a different model than what frontend expects
+          if (status.model_name && status.model_name !== state.modelConfig.modelPath) {
+            const frontendSize = detectModelSize(state.modelConfig.modelPath);
+            const backendSize = status.model_size || detectModelSize(status.model_name);
+
+            if (frontendSize !== backendSize) {
+              console.log(
+                `[flowStore] Backend model (${status.model_name}) differs from frontend (${state.modelConfig.modelPath}). Syncing...`
+              );
+              updates.modelConfig = {
+                ...state.modelConfig,
+                modelPath: status.model_name,
+              };
+            }
+          }
+
+          // Validate that current selectedLayers are still valid for the new available_layers
+          const validSelectedLayers = state.selectedLayers.filter(
+            (layer) => status.available_layers.includes(layer)
+          );
+
+          // If all selected layers are invalid, reset to the first available layer
+          if (validSelectedLayers.length === 0) {
+            console.log(
+              `[flowStore] Selected layers ${state.selectedLayers} not in available layers ${status.available_layers}. Resetting to [${status.available_layers[0]}]`
+            );
+            updates.selectedLayers = [status.available_layers[0]];
+          } else if (validSelectedLayers.length !== state.selectedLayers.length) {
+            // If some layers were removed, update the selection
+            console.log(
+              `[flowStore] Some selected layers not available. Updating from ${state.selectedLayers} to ${validSelectedLayers}`
+            );
+            updates.selectedLayers = validSelectedLayers;
+          }
+
+          return updates;
+        });
       },
 
       setLoadingStatus: (loading: boolean) => {
@@ -643,6 +722,17 @@ export const useFlowStore = create<FlowState>()(
         return systemStatus?.saes?.loaded_layers ?? [];
       },
 
+      getAvailableLayers: () => {
+        const { systemStatus, modelConfig } = get();
+        // Prefer backend's available_layers, fallback to model config detection
+        if (systemStatus?.available_layers && systemStatus.available_layers.length > 0) {
+          return systemStatus.available_layers;
+        }
+        // Fallback: detect from model path
+        const modelSize = detectModelSize(modelConfig.modelPath);
+        return getLayersForModelSize(modelSize);
+      },
+
       canAnalyze: () => {
         const { prompts, selectedLayers, isAnalyzing } = get();
         return prompts.length > 0 && selectedLayers.length > 0 && !isAnalyzing;
@@ -663,6 +753,12 @@ export const useFlowStore = create<FlowState>()(
         steeringUnitNormalize: state.steeringUnitNormalize,
         // Don't persist prompts, analysis results, or steering features (too large/transient)
       }),
+      onRehydrateStorage: () => (state) => {
+        // Set hydrated flag after localStorage is loaded
+        if (state) {
+          state._hasHydrated = true;
+        }
+      },
     }
   )
 );
@@ -673,6 +769,8 @@ export const useFlowStore = create<FlowState>()(
 
 export const useActivePrompt = () => useFlowStore((state) => state.getActivePrompt());
 export const useSelectedLayers = () => useFlowStore((state) => state.selectedLayers);
+export const useAvailableLayers = () => useFlowStore((state) => state.getAvailableLayers());
+export const useHasHydrated = () => useFlowStore((state) => state._hasHydrated);
 export const useModelConfig = () => useFlowStore((state) => state.modelConfig);
 export const useSystemStatus = () => useFlowStore((state) => state.systemStatus);
 export const useIsAnalyzing = () => useFlowStore((state) => state.isAnalyzing);

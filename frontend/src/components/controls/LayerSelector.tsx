@@ -1,32 +1,43 @@
 "use client";
 
-import { useFlowStore } from "@/state/flowStore";
-import { AVAILABLE_LAYERS } from "@/types/flow";
-
-// Hex colors matching FlowVisualization for consistency
-const LAYER_HEX_COLORS: Record<number, string> = {
-  9: "#a855f7",   // purple-500
-  17: "#3b82f6",  // blue-500
-  22: "#06b6d4",  // cyan-500
-  29: "#22c55e",  // green-500
-};
+import { useFlowStore, useHasHydrated } from "@/state/flowStore";
+import { getLayerHexByPosition } from "@/types/flow";
 
 interface LayerSelectorProps {
   disabled?: boolean;
 }
 
 export function LayerSelector({ disabled = false }: LayerSelectorProps) {
-  const { selectedLayers, toggleLayer, systemStatus } = useFlowStore();
+  const { selectedLayers, toggleLayer, systemStatus, getAvailableLayers } = useFlowStore();
+  const hasHydrated = useHasHydrated();
   const loadedLayers = systemStatus?.saes?.loaded_layers ?? [];
+  const availableLayers = getAvailableLayers();
+
+  // Show loading skeleton until hydration is complete to prevent SSR mismatch
+  if (!hasHydrated) {
+    return (
+      <div className="flex items-center gap-4">
+        <span className="text-sm text-zinc-400 font-medium">Layers:</span>
+        <div className="flex items-center gap-3">
+          {[1, 2, 3, 4].map((i) => (
+            <div
+              key={i}
+              className="w-24 h-8 bg-zinc-800/50 rounded-md animate-pulse"
+            />
+          ))}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="flex items-center gap-4">
       <span className="text-sm text-zinc-400 font-medium">Layers:</span>
       <div className="flex items-center gap-3">
-        {AVAILABLE_LAYERS.map((layer) => {
+        {availableLayers.map((layer) => {
           const isSelected = selectedLayers.includes(layer);
           const isLoaded = loadedLayers.includes(layer);
-          const color = LAYER_HEX_COLORS[layer] || "#888";
+          const color = getLayerHexByPosition(layer, availableLayers);
 
           return (
             <label

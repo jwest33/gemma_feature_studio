@@ -52,7 +52,7 @@ from app.inference.steering import (
     generate_streaming,
     generate_comparison,
 )
-from app.inference.model_loader import get_model_manager, AVAILABLE_LAYERS
+from app.inference.model_loader import get_model_manager, get_available_layers
 from app.core.config import get_settings, get_runtime_config
 
 router = APIRouter(prefix="/api", tags=["features"])
@@ -317,7 +317,7 @@ async def get_loaded_saes():
     manager = get_model_manager()
     return {
         "layers": manager.get_loaded_layers(),
-        "available_layers": AVAILABLE_LAYERS,
+        "available_layers": get_available_layers(),
         "registry": manager._sae_registry.get_status() if manager._sae_registry else {},
     }
 
@@ -684,6 +684,7 @@ async def get_neuronpedia_feature(request: NeuronpediaFeatureRequest):
     Returns feature explanations and example activations from Neuronpedia's database.
     """
     settings = get_settings()
+    runtime_config = get_runtime_config()
 
     if not settings.neuronpedia_api_key:
         raise HTTPException(
@@ -691,9 +692,9 @@ async def get_neuronpedia_feature(request: NeuronpediaFeatureRequest):
             detail="Neuronpedia API key not configured. Add NEURONPEDIA_API_KEY to .env file."
         )
 
-    # Build the Neuronpedia identifiers
-    model_id = settings.neuronpedia_model_id
-    layer_id = build_neuronpedia_layer_id(request.layer, settings.sae_type, settings.sae_width)
+    # Build the Neuronpedia identifiers - use runtime config for model-specific values
+    model_id = runtime_config.neuronpedia_model_id
+    layer_id = build_neuronpedia_layer_id(request.layer, runtime_config.sae_type, runtime_config.sae_width)
 
     # Construct the API URL
     api_url = f"{settings.neuronpedia_base_url}/feature/{model_id}/{layer_id}/{request.feature_id}"

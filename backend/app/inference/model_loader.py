@@ -11,8 +11,16 @@ from app.core.config import get_settings, get_runtime_config
 from app.inference.vram_monitor import VRAMMonitor
 from app.inference.sae_registry import SAERegistry, SAEEntry
 
-# Available layers for Gemma-3-4B
-AVAILABLE_LAYERS = [9, 17, 22, 29]
+
+def get_available_layers() -> list[int]:
+    """Get available SAE layers for the current model configuration."""
+    runtime_config = get_runtime_config()
+    return runtime_config.get_available_layers()
+
+
+# For backwards compatibility - this will be deprecated
+# Use get_available_layers() instead
+AVAILABLE_LAYERS = [9, 17, 22, 29]  # Default for 4B, updated dynamically
 
 
 class JumpReLUSAE(nn.Module):
@@ -52,20 +60,26 @@ class ModelManager:
     _initialized: bool = False
     _activation_cache: dict = {}
     _hooks: list = []
+    _d_model: int = 4096  # Model hidden dimension (updated when model loads)
 
     # Multi-SAE support
     _vram_monitor: Optional[VRAMMonitor] = None
     _sae_registry: Optional[SAERegistry] = None
+    _strict_memory_mode: bool = True  # Only keep 1 SAE loaded at a time
 
     def __new__(cls):
         if cls._instance is None:
             cls._instance = super().__new__(cls)
             # Initialize VRAM monitor and SAE registry
-            cls._vram_monitor = VRAMMonitor(safety_margin_gb=2.0)
+            # Use larger safety margin for bigger models
+            cls._vram_monitor = VRAMMonitor(safety_margin_gb=3.0)
             cls._sae_registry = SAERegistry(
                 vram_monitor=cls._vram_monitor,
                 max_sae_budget_gb=20.0
             )
+            # Strict memory mode: only keep 1 SAE loaded at a time
+            # Useful for 12B+ models where VRAM is very tight
+            cls._strict_memory_mode = True
         return cls._instance
 
     @property
@@ -82,16 +96,35 @@ class ModelManager:
 
     @property
     def sae(self) -> JumpReLUSAE:
-        if self._sae is None:
-            raise RuntimeError("SAE not loaded. Call load_model() first.")
-        return self._sae
+        """Get the default SAE (first available layer).
+
+        For multi-layer usage, prefer get_sae_for_layer() instead.
+        """
+        if self._sae is not None:
+            return self._sae
+
+        # Try to get from registry (first loaded layer)
+        runtime_config = get_runtime_config()
+        default_layer = runtime_config.get_default_layer()
+        entry = self._sae_registry.get_by_layer(default_layer)
+        if entry:
+            return entry.sae
+
+        raise RuntimeError(
+            "No SAE loaded. Use load_sae_for_layer() to load an SAE first, "
+            "or run an analysis which loads SAEs automatically."
+        )
 
     @property
     def is_loaded(self) -> bool:
         return self._initialized
 
     def load_model(self, force_reload: bool = False) -> None:
-        """Load the Gemma 3 model and Gemma Scope 2 SAE into memory."""
+        """Load the Gemma 3 model into memory.
+
+        SAEs are loaded on-demand via load_sae_for_layer() to minimize VRAM usage.
+        This is especially important for larger models (12B, 27B) where VRAM is tight.
+        """
         if self._initialized and not force_reload:
             return
 
@@ -115,29 +148,87 @@ class ModelManager:
         )
         self._model.eval()
 
-        # Build the SAE path using runtime config
-        sae_subdir = f"{runtime_config.sae_type}/layer_{settings.sae_layer}_width_{runtime_config.sae_width}_l0_{runtime_config.sae_l0}"
-        sae_filename = f"{sae_subdir}/params.safetensors"
+        # Clear any existing SAEs from previous model
+        if self._sae_registry is not None:
+            self._sae_registry.clear_all()
+        self._sae = None  # Clear legacy SAE reference
 
-        print(f"Loading SAE from: {runtime_config.sae_repo}/{sae_filename}")
-        path_to_params = hf_hub_download(
-            repo_id=runtime_config.sae_repo,
-            filename=sae_filename,
-        )
-
-        params = load_file(path_to_params, device=device)
-        d_model, d_sae = params["w_enc"].shape
-
-        self._sae = JumpReLUSAE(d_model, d_sae)
-        self._sae.load_state_dict(params)
-        self._sae.to(device)
-        self._sae.eval()
+        # Get model's hidden dimension for accurate SAE size estimation
+        self._d_model = self._get_model_hidden_size()
 
         self._initialized = True
-        print("Model and SAE loaded successfully")
+        print("Model loaded successfully (SAEs loaded on-demand)")
         print(f"  Model: {model_name}")
-        print(f"  SAE: {sae_subdir}")
-        print(f"  SAE width: {d_sae}")
+        print(f"  Hidden dim: {self._d_model}")
+        print(f"  Available layers: {runtime_config.get_available_layers()}")
+
+        # Show VRAM status after model load
+        vram = self._vram_monitor.get_snapshot()
+        print(f"  VRAM: {vram.allocated_gb:.1f}GB allocated, {vram.free_gb:.1f}GB free")
+
+    def _get_model_hidden_size(self) -> int:
+        """Get the hidden dimension of the loaded model."""
+        if self._model is None:
+            return 4096  # Default fallback
+
+        config = self._model.config
+
+        # For Gemma3ForConditionalGeneration, the text config is nested
+        # Try to get the text_config first (for vision-language models)
+        text_config = getattr(config, 'text_config', config)
+
+        # Try common attribute names for hidden size
+        for attr in ['hidden_size', 'd_model', 'n_embd', 'dim']:
+            if hasattr(text_config, attr):
+                value = getattr(text_config, attr)
+                print(f"  Found {attr}={value} in text_config")
+                return value
+
+        # Also check the main config
+        for attr in ['hidden_size', 'd_model', 'n_embd', 'dim']:
+            if hasattr(config, attr):
+                value = getattr(config, attr)
+                print(f"  Found {attr}={value} in config")
+                return value
+
+        print(f"  Warning: Could not find hidden_size, using default 4096")
+        print(f"  Config type: {type(config).__name__}")
+        print(f"  Config attrs: {[a for a in dir(config) if not a.startswith('_')][:20]}")
+        return 4096
+
+    def _estimate_sae_size(self, width: str, dtype: torch.dtype = torch.float32) -> int:
+        """
+        Estimate SAE memory footprint based on width and actual model dimension.
+
+        SAE parameters:
+        - w_enc: (d_model, d_sae) - encoder weights
+        - w_dec: (d_sae, d_model) - decoder weights
+        - threshold: (d_sae,) - threshold values
+        - b_enc: (d_sae,) - encoder bias
+        - b_dec: (d_model,) - decoder bias
+        """
+        d_model = self._d_model
+
+        width_map = {
+            "16k": 16384,
+            "65k": 65536,
+            "262k": 262144,
+            "1m": 1048576,
+        }
+        d_sae = width_map.get(width, 65536)
+
+        bytes_per_param = 4 if dtype == torch.float32 else 2
+
+        # Total parameters
+        num_params = (
+            d_model * d_sae +  # w_enc
+            d_sae * d_model +  # w_dec
+            d_sae +            # threshold
+            d_sae +            # b_enc
+            d_model            # b_dec
+        )
+
+        return num_params * bytes_per_param
 
     def unload_model(self) -> None:
         """Unload model from memory to free GPU resources."""
@@ -184,9 +275,10 @@ class ModelManager:
         return {
             "model_loaded": self._initialized,
             "model_name": runtime_config.model_name if self._initialized else None,
+            "model_size": runtime_config.model_size,
             "vram": vram,
             "saes": sae_status,
-            "available_layers": AVAILABLE_LAYERS,
+            "available_layers": get_available_layers(),
         }
 
     def preflight_check(self, layers: list[int], width: str = "65k") -> dict:
@@ -198,6 +290,7 @@ class ModelManager:
         settings = get_settings()
         runtime_config = get_runtime_config()
         dtype = torch.float32 if settings.dtype == "float32" else torch.bfloat16
+        available_layers = get_available_layers()
 
         # Calculate bytes needed for new SAEs (not already loaded)
         bytes_needed = 0
@@ -205,7 +298,7 @@ class ModelManager:
         already_loaded = []
 
         for layer in layers:
-            if layer not in AVAILABLE_LAYERS:
+            if layer not in available_layers:
                 continue
             if self._sae_registry.is_loaded(layer, width, runtime_config.sae_l0, runtime_config.sae_type):
                 already_loaded.append(layer)
@@ -251,7 +344,7 @@ class ModelManager:
         Load SAE for a specific layer.
 
         Args:
-            layer: Layer index (must be in AVAILABLE_LAYERS)
+            layer: Layer index (must be in available layers for current model)
             width: SAE width (defaults to runtime config)
             l0: L0 regularization level (defaults to runtime config)
             sae_type: Hook type (defaults to runtime config)
@@ -263,8 +356,9 @@ class ModelManager:
             ValueError: If layer not available
             MemoryError: If insufficient VRAM
         """
-        if layer not in AVAILABLE_LAYERS:
-            raise ValueError(f"Layer {layer} not available. Choose from {AVAILABLE_LAYERS}")
+        available_layers = get_available_layers()
+        if layer not in available_layers:
+            raise ValueError(f"Layer {layer} not available. Choose from {available_layers}")
 
         settings = get_settings()
         runtime_config = get_runtime_config()
@@ -280,19 +374,28 @@ class ModelManager:
             print(f"SAE for layer {layer} already loaded")
             return existing
 
-        # Estimate size and check memory
-        estimated_size = self._vram_monitor.estimate_sae_size(width, dtype)
+        # Estimate size using the actual model's hidden dimension
+        estimated_size = self._estimate_sae_size(width, dtype)
+
+        # In strict memory mode, clear ALL other SAEs before loading a new one
+        # This is essential for large models (12B+) where only 1 SAE fits in VRAM
+        if self._strict_memory_mode and self._sae_registry.count() > 0:
+            print(f"Strict memory mode: clearing {self._sae_registry.count()} existing SAE(s)...")
+            self._sae_registry.clear_all()
+            torch.cuda.empty_cache()
+
+        # Try to free memory if needed
+        snapshot = self._vram_monitor.get_snapshot()
+        print(f"VRAM before SAE load: {snapshot.allocated_gb:.2f}GB allocated, {snapshot.free_gb:.2f}GB free")
 
         if not self._vram_monitor.can_allocate(estimated_size):
-            # Try to evict LRU SAEs
-            freed = self._sae_registry.evict_lru(estimated_size)
-            if not self._vram_monitor.can_allocate(estimated_size):
-                snapshot = self._vram_monitor.get_snapshot()
-                raise MemoryError(
-                    f"Insufficient VRAM to load SAE for layer {layer}. "
-                    f"Need ~{estimated_size / (1024**3):.2f}GB, "
-                    f"have {snapshot.free_gb:.2f}GB free."
-                )
+            # Try evicting any remaining SAEs
+            if self._sae_registry.count() > 0:
+                print(f"Evicting {self._sae_registry.count()} SAE(s) to free memory...")
+                self._sae_registry.clear_all()
+            torch.cuda.empty_cache()
+            snapshot = self._vram_monitor.get_snapshot()
+            print(f"After cache clear: {snapshot.free_gb:.2f}GB free")
 
         # Build SAE path and download using runtime config
         sae_subdir = f"{sae_type}/layer_{layer}_width_{width}_l0_{l0}"
@@ -612,9 +715,9 @@ class ModelManager:
         )
 
     def _get_target_layer(self):
-        """Get the target layer module."""
-        settings = get_settings()
-        layer_idx = settings.sae_layer
+        """Get the target layer module for single-SAE operations."""
+        runtime_config = get_runtime_config()
+        layer_idx = runtime_config.get_default_layer()
 
         layers = self._find_layers()
         if layer_idx >= len(layers):
@@ -632,13 +735,20 @@ class ModelManager:
         return self._tokenizer.encode(text, return_tensors="pt")
 
     def get_sae_width(self) -> int:
-        """Get the SAE feature dimension."""
-        return self._sae.d_sae
+        """Get the SAE feature dimension from config (doesn't require SAE to be loaded)."""
+        runtime_config = get_runtime_config()
+        width_map = {
+            "16k": 16384,
+            "65k": 65536,
+            "262k": 262144,
+            "1m": 1048576,
+        }
+        return width_map.get(runtime_config.sae_width, 65536)
 
     def get_hook_point(self) -> str:
         """Get the SAE hook point description."""
-        settings = get_settings()
-        return f"{settings.sae_type}/layer_{settings.sae_layer}"
+        runtime_config = get_runtime_config()
+        return f"{runtime_config.sae_type}/layer_{runtime_config.get_default_layer()}"
 
     @contextmanager
     def capture_activations(self):

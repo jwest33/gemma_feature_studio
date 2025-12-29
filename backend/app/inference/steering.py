@@ -12,7 +12,7 @@ from typing import Generator
 
 from app.inference.model_loader import get_model_manager
 from app.schemas.analysis import SteeringFeature, NormalizationMode
-from app.core.config import get_settings
+from app.core.config import get_settings, get_runtime_config
 
 
 def generate_with_steering(
@@ -179,6 +179,7 @@ def generate_streaming(
         Individual tokens as they are generated
     """
     settings = get_settings()
+    runtime_config = get_runtime_config()
     manager = get_model_manager()
 
     if not manager.is_loaded:
@@ -186,8 +187,22 @@ def generate_streaming(
 
     model = manager.model
     tokenizer = manager.tokenizer
-    sae = manager.sae
     device = settings.device
+
+    # Load SAE for the default layer if not already loaded
+    # This is needed for steering which requires an SAE
+    default_layer = runtime_config.get_default_layer()
+    try:
+        manager.load_sae_for_layer(default_layer)
+    except MemoryError as e:
+        # If we can't load SAE due to memory, proceed without steering
+        print(f"Warning: Could not load SAE for steering: {e}")
+
+    # Get SAE (may be None if loading failed)
+    try:
+        sae = manager.sae
+    except RuntimeError:
+        sae = None  # Proceed without SAE/steering if not available
 
     # Apply chat template for Gemma model
     messages = [{"role": "user", "content": prompt}]

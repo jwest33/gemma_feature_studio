@@ -9,6 +9,7 @@ import {
   type LayerFlowData,
   type DeduplicatedFeature,
 } from "@/lib/flowDataUtils";
+import { getLayerHexByPosition } from "@/types/flow";
 
 // ============================================================================
 // Types
@@ -52,11 +53,29 @@ const LAYOUT = {
   outputColumnWidthComparison: 400, // Wider when showing comparison
 };
 
+// Static layer colors - maps each layer number to its color based on position in model
+// For layers that appear in multiple models at different positions, 4B colors take precedence
+// Use getLayerHexByPosition(layer, availableLayers) for accurate dynamic coloring
 const LAYER_HEX_COLORS: Record<number, string> = {
-  9: "#a855f7",   // purple-500
-  17: "#3b82f6",  // blue-500
-  22: "#06b6d4",  // cyan-500
-  29: "#22c55e",  // green-500
+  // Position 0 (25% depth) - Purple
+  5: "#a855f7",   // 270M
+  7: "#a855f7",   // 1B
+  9: "#a855f7",   // 4B (default model)
+  12: "#a855f7",  // 12B (also cyan in 270M, but 12B takes precedence after 4B)
+  16: "#a855f7",  // 27B
+  // Position 1 (50% depth) - Blue
+  13: "#3b82f6",  // 1B
+  17: "#3b82f6",  // 4B
+  24: "#3b82f6",  // 12B
+  31: "#3b82f6",  // 27B (also cyan in 12B)
+  // Position 2 (65% depth) - Cyan
+  15: "#06b6d4",  // 270M (also green, but cyan for position 2)
+  22: "#06b6d4",  // 4B & 1B
+  40: "#06b6d4",  // 27B
+  41: "#06b6d4",  // 12B (position 3 green, but this works)
+  // Position 3 (85% depth) - Green
+  29: "#22c55e",  // 4B
+  53: "#22c55e",  // 27B
 };
 
 // ============================================================================

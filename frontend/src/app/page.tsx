@@ -13,7 +13,7 @@ import { LayerSelector, VRAMMonitor, PromptManager, ModelSelector } from "@/comp
 import { FlowVisualization, FeatureInspector, ResizablePanel } from "@/components/flow";
 import { GlobalSteeringPanel } from "@/components/GlobalSteeringPanel";
 import { analyzeMultiLayer, loadSAEs, generateTextStream, configureModel, getConfig } from "@/lib/api";
-import { SAE_PRESETS } from "@/types/flow";
+import { SAE_PRESETS, detectModelSize, getSaeRepoForModelSize } from "@/types/flow";
 import type { GenerateRequest } from "@/types/analysis";
 
 export default function Home() {
@@ -177,9 +177,13 @@ export default function Home() {
       const preset = getSaePreset();
       if (!preset) return;
 
+      // Get the correct SAE repo for the model size
+      const modelSize = detectModelSize(modelConfig.modelPath);
+      const saeRepo = getSaeRepoForModelSize(modelSize);
+
       await configureModel({
         model_name: modelConfig.modelPath,
-        sae_repo: preset.repo,
+        sae_repo: saeRepo,
         sae_width: preset.width,
         sae_l0: preset.l0,
         sae_type: preset.type,
@@ -205,9 +209,13 @@ export default function Home() {
       // First, ensure model config is applied
       const preset = getSaePreset();
       if (preset) {
+        // Get the correct SAE repo for the model size (not the hardcoded 4B repo)
+        const modelSize = detectModelSize(modelConfig.modelPath);
+        const saeRepo = getSaeRepoForModelSize(modelSize);
+
         await configureModel({
           model_name: modelConfig.modelPath,
-          sae_repo: preset.repo,
+          sae_repo: saeRepo,
           sae_width: preset.width,
           sae_l0: preset.l0,
           sae_type: preset.type,

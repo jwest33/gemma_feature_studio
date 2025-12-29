@@ -96,13 +96,23 @@ class VRAMMonitor:
                 pressure=MemoryPressure.LOW,
             )
 
+        # Sync and clear cache before measuring
+        torch.cuda.synchronize(self._device_index)
+
         total = torch.cuda.get_device_properties(self._device_index).total_memory
         allocated = torch.cuda.memory_allocated(self._device_index)
         reserved = torch.cuda.memory_reserved(self._device_index)
-        free = total - reserved
 
-        # Calculate pressure level
-        usage_ratio = reserved / total if total > 0 else 0
+        # Free memory is what's actually available for new allocations
+        # Use allocated (not reserved) for more accurate free calculation
+        # Reserved includes cached memory that can be reused
+        free = total - allocated
+
+        # Ensure free is never negative (can happen with memory mapping)
+        free = max(0, free)
+
+        # Calculate pressure level based on allocated (actual usage)
+        usage_ratio = allocated / total if total > 0 else 0
         if usage_ratio < 0.50:
             pressure = MemoryPressure.LOW
         elif usage_ratio < 0.75:

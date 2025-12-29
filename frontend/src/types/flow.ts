@@ -5,47 +5,131 @@
 import type { LayerActivations, TokenActivations, FeatureActivation } from "./analysis";
 
 // ============================================================================
-// Available Layers Configuration
+// Model Size Configuration
 // ============================================================================
 
-export const AVAILABLE_LAYERS = [9, 17, 22, 29] as const;
-export type AvailableLayer = (typeof AVAILABLE_LAYERS)[number];
+export type ModelSize = "270m" | "1b" | "4b" | "12b" | "27b";
 
-export const LAYER_COLORS: Record<AvailableLayer, string> = {
-  9: "purple",
-  17: "blue",
-  22: "cyan",
+export interface ModelSizeConfig {
+  size: ModelSize;
+  layers: number[];
+  saeRepo: string;
+  modelName: string;
+  displayName: string;
+}
+
+// Maps model sizes to their available SAE layers and configurations
+export const MODEL_SIZE_CONFIGS: Record<ModelSize, ModelSizeConfig> = {
+  "270m": {
+    size: "270m",
+    layers: [5, 9, 12, 15],
+    saeRepo: "google/gemma-scope-2-270m-it",
+    modelName: "google/gemma-3-270m-it",
+    displayName: "Gemma 3 270M",
+  },
+  "1b": {
+    size: "1b",
+    layers: [7, 13, 17, 22],
+    saeRepo: "google/gemma-scope-2-1b-it",
+    modelName: "google/gemma-3-1b-it",
+    displayName: "Gemma 3 1B",
+  },
+  "4b": {
+    size: "4b",
+    layers: [9, 17, 22, 29],
+    saeRepo: "google/gemma-scope-2-4b-it",
+    modelName: "google/gemma-3-4b-it",
+    displayName: "Gemma 3 4B",
+  },
+  "12b": {
+    size: "12b",
+    layers: [12, 24, 31, 41],
+    saeRepo: "google/gemma-scope-2-12b-it",
+    modelName: "google/gemma-3-12b-it",
+    displayName: "Gemma 3 12B",
+  },
+  "27b": {
+    size: "27b",
+    layers: [16, 31, 40, 53],
+    saeRepo: "google/gemma-scope-2-27b-it",
+    modelName: "google/gemma-3-27b-it",
+    displayName: "Gemma 3 27B",
+  },
+};
+
+// Default layers for backwards compatibility (4B model)
+export const DEFAULT_AVAILABLE_LAYERS = [9, 17, 22, 29] as const;
+export type AvailableLayer = number;
+
+// ============================================================================
+// Layer Color Configuration
+// ============================================================================
+
+// Color palette for layers - uses position-based coloring
+// First layer = purple, second = blue, third = cyan, fourth = green
+const LAYER_COLOR_PALETTE = ["purple", "blue", "cyan", "green"] as const;
+const LAYER_HEX_PALETTE = ["#a855f7", "#3b82f6", "#06b6d4", "#22c55e"] as const;
+
+/**
+ * Get color for a layer based on its position in the available layers array
+ */
+export function getLayerColorByPosition(layer: number, availableLayers: number[]): string {
+  const index = availableLayers.indexOf(layer);
+  if (index === -1) return "gray";
+  return LAYER_COLOR_PALETTE[index % LAYER_COLOR_PALETTE.length];
+}
+
+/**
+ * Get hex color for a layer based on its position
+ */
+export function getLayerHexByPosition(layer: number, availableLayers: number[]): string {
+  const index = availableLayers.indexOf(layer);
+  if (index === -1) return "#888888";
+  return LAYER_HEX_PALETTE[index % LAYER_HEX_PALETTE.length];
+}
+
+// Legacy static mappings for backwards compatibility (4B model layers)
+export const LAYER_COLORS: Record<number, string> = {
+  // 270M layers
+  5: "purple", 9: "blue", 12: "cyan", 15: "green",
+  // 1B layers
+  7: "purple", 13: "blue", 17: "cyan", 22: "green",
+  // 4B layers (also includes 9, 17, 22 from above)
   29: "green",
+  // 12B layers
+  24: "blue", 31: "cyan", 41: "green",
+  // 27B layers
+  16: "purple", 40: "cyan", 53: "green",
 };
 
-export const LAYER_BORDER_CLASSES: Record<AvailableLayer, string> = {
-  9: "border-purple-500",
-  17: "border-blue-500",
-  22: "border-cyan-500",
-  29: "border-green-500",
+export const LAYER_BORDER_CLASSES: Record<number, string> = {
+  5: "border-purple-500", 7: "border-purple-500", 9: "border-purple-500", 12: "border-purple-500", 16: "border-purple-500",
+  13: "border-blue-500", 17: "border-blue-500", 24: "border-blue-500", 31: "border-blue-500",
+  22: "border-cyan-500", 40: "border-cyan-500",
+  15: "border-green-500", 29: "border-green-500", 41: "border-green-500", 53: "border-green-500",
 };
 
-export const LAYER_BG_CLASSES: Record<AvailableLayer, string> = {
-  9: "bg-purple-500/10",
-  17: "bg-blue-500/10",
-  22: "bg-cyan-500/10",
-  29: "bg-green-500/10",
+export const LAYER_BG_CLASSES: Record<number, string> = {
+  5: "bg-purple-500/10", 7: "bg-purple-500/10", 9: "bg-purple-500/10", 12: "bg-purple-500/10", 16: "bg-purple-500/10",
+  13: "bg-blue-500/10", 17: "bg-blue-500/10", 24: "bg-blue-500/10", 31: "bg-blue-500/10",
+  22: "bg-cyan-500/10", 40: "bg-cyan-500/10",
+  15: "bg-green-500/10", 29: "bg-green-500/10", 41: "bg-green-500/10", 53: "bg-green-500/10",
 };
 
 // Full background classes for selected states (Tailwind JIT requires static classes)
-export const LAYER_BG_SELECTED_CLASSES: Record<AvailableLayer, string> = {
-  9: "bg-purple-500/20",
-  17: "bg-blue-500/20",
-  22: "bg-cyan-500/20",
-  29: "bg-green-500/20",
+export const LAYER_BG_SELECTED_CLASSES: Record<number, string> = {
+  5: "bg-purple-500/20", 7: "bg-purple-500/20", 9: "bg-purple-500/20", 12: "bg-purple-500/20", 16: "bg-purple-500/20",
+  13: "bg-blue-500/20", 17: "bg-blue-500/20", 24: "bg-blue-500/20", 31: "bg-blue-500/20",
+  22: "bg-cyan-500/20", 40: "bg-cyan-500/20",
+  15: "bg-green-500/20", 29: "bg-green-500/20", 41: "bg-green-500/20", 53: "bg-green-500/20",
 };
 
 // Solid background classes for checkboxes
-export const LAYER_CHECKBOX_CLASSES: Record<AvailableLayer, string> = {
-  9: "bg-purple-500 border-purple-500",
-  17: "bg-blue-500 border-blue-500",
-  22: "bg-cyan-500 border-cyan-500",
-  29: "bg-green-500 border-green-500",
+export const LAYER_CHECKBOX_CLASSES: Record<number, string> = {
+  5: "bg-purple-500 border-purple-500", 7: "bg-purple-500 border-purple-500", 9: "bg-purple-500 border-purple-500", 12: "bg-purple-500 border-purple-500", 16: "bg-purple-500 border-purple-500",
+  13: "bg-blue-500 border-blue-500", 17: "bg-blue-500 border-blue-500", 24: "bg-blue-500 border-blue-500", 31: "bg-blue-500 border-blue-500",
+  22: "bg-cyan-500 border-cyan-500", 40: "bg-cyan-500 border-cyan-500",
+  15: "bg-green-500 border-green-500", 29: "bg-green-500 border-green-500", 41: "bg-green-500 border-green-500", 53: "bg-green-500 border-green-500",
 };
 
 // ============================================================================
@@ -83,6 +167,7 @@ export interface SAERegistryStatus {
 export interface SystemStatus {
   model_loaded: boolean;
   model_name: string | null;
+  model_size: ModelSize;
   vram: VRAMStatus;
   saes: SAERegistryStatus;
   available_layers: number[];
@@ -217,12 +302,27 @@ export interface SAEPreset {
   type: string;
 }
 
+// SAE presets for 4B model (default) - other model sizes auto-switch repos
 export const SAE_PRESETS: SAEPreset[] = [
   { id: "gemmascope-2-res-16k", label: "GemmaScope 2 Res 16k", repo: "google/gemma-scope-2-4b-it", width: "16k", l0: "medium", type: "resid_post" },
   { id: "gemmascope-2-res-65k", label: "GemmaScope 2 Res 65k", repo: "google/gemma-scope-2-4b-it", width: "65k", l0: "medium", type: "resid_post" },
   { id: "gemmascope-2-res-262k", label: "GemmaScope 2 Res 262k", repo: "google/gemma-scope-2-4b-it", width: "262k", l0: "medium", type: "resid_post" },
   { id: "gemmascope-2-res-1m", label: "GemmaScope 2 Res 1M", repo: "google/gemma-scope-2-4b-it", width: "1m", l0: "medium", type: "resid_post" },
 ];
+
+/**
+ * Get SAE presets for a specific model size
+ * The SAE repo is automatically updated based on model size
+ */
+export function getSaePresetsForModelSize(size: ModelSize): SAEPreset[] {
+  const config = MODEL_SIZE_CONFIGS[size];
+  if (!config) return SAE_PRESETS;
+
+  return SAE_PRESETS.map(preset => ({
+    ...preset,
+    repo: config.saeRepo,
+  }));
+}
 
 export interface ModelConfig {
   modelPath: string;
@@ -254,25 +354,57 @@ export interface ConfigureModelResponse {
 // ============================================================================
 
 export function getLayerColor(layer: number): string {
-  return LAYER_COLORS[layer as AvailableLayer] || "gray";
+  return LAYER_COLORS[layer] || "gray";
 }
 
 export function getLayerBorderClass(layer: number): string {
-  return LAYER_BORDER_CLASSES[layer as AvailableLayer] || "border-gray-500";
+  return LAYER_BORDER_CLASSES[layer] || "border-gray-500";
 }
 
 export function getLayerBgClass(layer: number): string {
-  return LAYER_BG_CLASSES[layer as AvailableLayer] || "bg-gray-500/10";
+  return LAYER_BG_CLASSES[layer] || "bg-gray-500/10";
 }
 
 export function getLayerBgSelectedClass(layer: number): string {
-  return LAYER_BG_SELECTED_CLASSES[layer as AvailableLayer] || "bg-gray-500/20";
+  return LAYER_BG_SELECTED_CLASSES[layer] || "bg-gray-500/20";
 }
 
 export function getLayerCheckboxClass(layer: number): string {
-  return LAYER_CHECKBOX_CLASSES[layer as AvailableLayer] || "bg-gray-500 border-gray-500";
+  return LAYER_CHECKBOX_CLASSES[layer] || "bg-gray-500 border-gray-500";
 }
 
-export function isValidLayer(layer: number): layer is AvailableLayer {
-  return AVAILABLE_LAYERS.includes(layer as AvailableLayer);
+export function isValidLayer(layer: number, availableLayers: number[]): boolean {
+  return availableLayers.includes(layer);
+}
+
+/**
+ * Detect model size from model path/name
+ */
+export function detectModelSize(modelPath: string): ModelSize {
+  const lowerPath = modelPath.toLowerCase();
+
+  if (lowerPath.includes("270m")) return "270m";
+  if (lowerPath.includes("27b")) return "27b";  // Check before 2b
+  if (lowerPath.includes("12b")) return "12b";
+  if (lowerPath.includes("4b")) return "4b";
+  if (lowerPath.includes("1b")) return "1b";
+
+  return "4b";  // Default
+}
+
+/**
+ * Get available layers for a model size
+ */
+export function getLayersForModelSize(size: ModelSize): number[] {
+  return MODEL_SIZE_CONFIGS[size]?.layers || DEFAULT_AVAILABLE_LAYERS;
+}
+
+/**
+ * Get SAE repo for a model size
+ */
+export function getSaeRepoForModelSize(size: ModelSize, isPT: boolean = false): string {
+  const config = MODEL_SIZE_CONFIGS[size];
+  if (!config) return "google/gemma-scope-2-4b-it";
+  // Note: The backend handles IT vs PT repo selection
+  return config.saeRepo;
 }

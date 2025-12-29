@@ -12,7 +12,22 @@ import time
 import threading
 import urllib.request
 import urllib.error
+import platform
 from pathlib import Path
+
+
+def get_npm_command() -> list[str]:
+    """Get the npm command for the current platform.
+
+    On Windows, npm is a batch file (npm.cmd) that requires shell=True
+    or explicit .cmd extension. We use shell=True on Windows for PATH resolution.
+    """
+    return ["npm"]
+
+
+def get_shell_flag() -> bool:
+    """Returns True on Windows (needed for PATH resolution of npm.cmd), False otherwise."""
+    return platform.system() == "Windows"
 
 # Configuration
 BACKEND_PORT = 8000
@@ -54,9 +69,9 @@ def check_node_modules():
         if response in ("", "y", "yes"):
             print("Installing frontend dependencies...")
             subprocess.run(
-                ["npm", "install"],
+                get_npm_command() + ["install"],
                 cwd=FRONTEND_DIR,
-                shell=True,
+                shell=get_shell_flag(),
                 check=True,
             )
         else:
@@ -122,9 +137,9 @@ def start_frontend():
     print(f"Starting frontend server on http://localhost:{FRONTEND_PORT}...")
 
     return subprocess.Popen(
-        ["npm", "run", "dev"],
+        get_npm_command() + ["run", "dev"],
         cwd=FRONTEND_DIR,
-        shell=True,
+        shell=get_shell_flag(),
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
