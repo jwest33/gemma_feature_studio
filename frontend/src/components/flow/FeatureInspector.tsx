@@ -2,8 +2,215 @@
 
 import { useMemo, useState, useCallback, useEffect } from "react";
 import { useFlowStore } from "@/state/flowStore";
-import type { FeatureActivation, NeuronpediaFeatureResponse } from "@/types/analysis";
+import type { FeatureActivation, NeuronpediaFeatureResponse, NeuronpediaActivation } from "@/types/analysis";
 import { getNeuronpediaFeature } from "@/lib/api";
+
+// =============================================================================
+// Neuronpedia Export Utilities
+// =============================================================================
+
+interface ParsedMessage {
+  role: "user" | "model" | "system";
+  content: string;
+  tokens: Array<{
+    token: string;
+    activation: number;
+  }>;
+  maxActivation: number;
+}
+
+interface ParsedActivation {
+  messages: ParsedMessage[];
+  fullText: string;
+  maxValue: number;
+  maxTokenIndex: number;
+}
+
+/**
+ * Parse a Neuronpedia activation into user/model message segments.
+ * Handles Gemma's <start_of_turn>user/<start_of_turn>model format.
+ */
+function parseActivationMessages(activation: NeuronpediaActivation): ParsedActivation {
+  const { tokens, values, maxValue, maxTokenIndex } = activation;
+
+  const messages: ParsedMessage[] = [];
+  let currentRole: "user" | "model" | "system" = "system";
+  let currentTokens: Array<{ token: string; activation: number }> = [];
+  let fullText = "";
+
+  // Special tokens that indicate role changes
+  const specialTokens = new Set(['<bos>', '<eos>', '<pad>', '<start_of_turn>', '<end_of_turn>', '<sep>', '<cls>', '<mask>']);
+
+  for (let i = 0; i < tokens.length; i++) {
+    const token = tokens[i];
+    const value = values[i] || 0;
+
+    // Check for role change tokens
+    if (token === '<start_of_turn>') {
+      // Save current segment if it has content
+      if (currentTokens.length > 0) {
+        const content = currentTokens.map(t => {
+          let display = t.token;
+          if (display.startsWith('▁') || display.startsWith('Ġ') || display.startsWith('·')) {
+            display = ' ' + display.slice(1);
+          }
+          return display;
+        }).join('').trim();
+
+        if (content) {
+          messages.push({
+            role: currentRole,
+            content,
+            tokens: [...currentTokens],
+            maxActivation: Math.max(...currentTokens.map(t => t.activation), 0),
+          });
+        }
+        currentTokens = [];
+      }
+      continue;
+    }
+
+    // Check for role indicators
+    if (token === 'user' && tokens[i - 1] === '<start_of_turn>') {
+      currentRole = 'user';
+      continue;
+    }
+    if (token === 'model' && tokens[i - 1] === '<start_of_turn>') {
+      currentRole = 'model';
+      continue;
+    }
+
+    // Skip other special tokens
+    if (specialTokens.has(token)) {
+      continue;
+    }
+
+    // Add token to current segment
+    currentTokens.push({ token, activation: value });
+
+    // Build full text
+    let displayToken = token;
+    if (displayToken.startsWith('▁') || displayToken.startsWith('Ġ') || displayToken.startsWith('·') || displayToken.startsWith(' ')) {
+      displayToken = ' ' + displayToken.slice(1);
+    }
+    fullText += displayToken;
+  }
+
+  // Save final segment
+  if (currentTokens.length > 0) {
+    const content = currentTokens.map(t => {
+      let display = t.token;
+      if (display.startsWith('▁') || display.startsWith('Ġ') || display.startsWith('·')) {
+        display = ' ' + display.slice(1);
+      }
+      return display;
+    }).join('').trim();
+
+    if (content) {
+      messages.push({
+        role: currentRole,
+        content,
+        tokens: [...currentTokens],
+        maxActivation: Math.max(...currentTokens.map(t => t.activation), 0),
+      });
+    }
+  }
+
+  return {
+    messages,
+    fullText: fullText.trim(),
+    maxValue,
+    maxTokenIndex,
+  };
+}
+
+interface ExportData {
+  feature: {
+    id: number;
+    layer: string;
+    modelId: string;
+    description: string | null;
+    neuronpediaUrl: string;
+  };
+  activations: Array<{
+    index: number;
+    maxActivation: number;
+    fullText: string;
+    messages: Array<{
+      role: string;
+      content: string;
+      maxActivation: number;
+      tokens: Array<{
+        token: string;
+        activation: number;
+      }>;
+    }>;
+  }>;
+  exportedAt: string;
+}
+
+function exportNeuronpediaData(data: NeuronpediaFeatureResponse): void {
+  const exportData: ExportData = {
+    feature: {
+      id: data.index,
+      layer: data.layer,
+      modelId: data.modelId,
+      description: data.description,
+      neuronpediaUrl: data.neuronpedia_url,
+    },
+    activations: data.activations.map((act, idx) => {
+      const parsed = parseActivationMessages(act);
+      return {
+        index: idx,
+        maxActivation: parsed.maxValue,
+        fullText: parsed.fullText,
+        messages: parsed.messages.map(msg => ({
+          role: msg.role,
+          content: msg.content,
+          maxActivation: msg.maxActivation,
+          tokens: msg.tokens,
+        })),
+      };
+    }),
+    exportedAt: new Date().toISOString(),
+  };
+
+  const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `neuronpedia-feature-${data.index}-layer-${data.layer}.json`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+function exportUserMessagesOnly(data: NeuronpediaFeatureResponse): void {
+  const userMessages: string[] = [];
+
+  for (const act of data.activations) {
+    const parsed = parseActivationMessages(act);
+    for (const msg of parsed.messages) {
+      if (msg.role === 'user' && msg.content.trim()) {
+        // Replace newlines with spaces so each message stays on one line
+        const singleLineContent = msg.content.trim().replace(/[\r\n]+/g, ' ');
+        userMessages.push(singleLineContent);
+      }
+    }
+  }
+
+  const content = userMessages.join('\n');
+  const blob = new Blob([content], { type: 'text/plain' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `neuronpedia-feature-${data.index}-user-messages.txt`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
 
 // Full class names for Tailwind JIT - dynamic class construction doesn't work
 const LAYER_TEXT_CLASSES: Record<number, string> = {
@@ -360,19 +567,45 @@ export function FeatureInspector({
                   <div className="w-2 h-2 rounded-full bg-emerald-500"></div>
                   <h4 className="text-sm font-semibold text-white">Neuronpedia</h4>
                 </div>
-                {neuronpediaData?.neuronpedia_url && (
-                  <a
-                    href={neuronpediaData.neuronpedia_url}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-xs text-blue-400 hover:text-blue-300 flex items-center gap-1.5 px-2 py-1 rounded bg-blue-500/10 hover:bg-blue-500/20 transition-colors"
-                  >
-                    View on Neuronpedia
-                    <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
-                    </svg>
-                  </a>
-                )}
+                <div className="flex items-center gap-2">
+                  {neuronpediaData?.hasData && neuronpediaData.activations.length > 0 && (
+                    <>
+                      <button
+                        onClick={() => exportNeuronpediaData(neuronpediaData)}
+                        className="text-xs text-emerald-400 hover:text-emerald-300 flex items-center gap-1.5 px-2 py-1 rounded bg-emerald-500/10 hover:bg-emerald-500/20 transition-colors"
+                        title="Export all activations as JSON"
+                      >
+                        <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                        </svg>
+                        JSON
+                      </button>
+                      <button
+                        onClick={() => exportUserMessagesOnly(neuronpediaData)}
+                        className="text-xs text-blue-400 hover:text-blue-300 flex items-center gap-1.5 px-2 py-1 rounded bg-blue-500/10 hover:bg-blue-500/20 transition-colors"
+                        title="Export user messages only as text file"
+                      >
+                        <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                        </svg>
+                        User TXT
+                      </button>
+                    </>
+                  )}
+                  {neuronpediaData?.neuronpedia_url && (
+                    <a
+                      href={neuronpediaData.neuronpedia_url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-xs text-blue-400 hover:text-blue-300 flex items-center gap-1.5 px-2 py-1 rounded bg-blue-500/10 hover:bg-blue-500/20 transition-colors"
+                    >
+                      View on Neuronpedia
+                      <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                      </svg>
+                    </a>
+                  )}
+                </div>
               </div>
 
               {neuronpediaLoading && (
@@ -419,69 +652,88 @@ export function FeatureInspector({
                       </div>
                       <div className="flex-1 min-h-0 overflow-y-auto space-y-3 pr-1">
                         {neuronpediaData.activations.map((act, idx) => {
-                          // Filter out special tokens
-                          const specialTokens = new Set(['<bos>', '<eos>', '<pad>', '<start_of_turn>', '<end_of_turn>', '<sep>', '<cls>', '<mask>']);
-                          const filteredTokens = act.tokens
-                            .map((token, i) => ({ token, value: act.values[i] || 0, originalIdx: i }))
-                            .filter(t => !specialTokens.has(t.token.trim()));
-
-                          // Find max among filtered tokens
-                          const maxFiltered = filteredTokens.reduce((max, t) => t.value > max.value ? t : max, { value: 0, originalIdx: -1 });
+                          const parsed = parseActivationMessages(act);
 
                           return (
-                            <div key={idx} className="bg-zinc-900/70 rounded-lg p-3 border border-zinc-700/50">
-                              <p className="text-sm leading-relaxed">
-                                {filteredTokens.map((t, tokenIdx) => {
-                                  const maxVal = act.maxValue || maxFiltered.value || 1;
-                                  const intensity = maxVal > 0 ? Math.min(t.value / maxVal, 1) : 0;
-                                  // Check if this is the max token (either by original index or highest value among filtered)
-                                  const isMax = t.value > 0 && (t.originalIdx === act.maxTokenIndex || t.value === maxFiltered.value);
-
-                                  // Clean up token display - handle subword tokens with space markers
-                                  // ▁ = SentencePiece, Ġ = GPT-2 BPE, · = Neuronpedia display format
-                                  let displayToken = t.token;
-                                  const needsSpaceBefore = displayToken.startsWith('▁') ||
-                                                           displayToken.startsWith('Ġ') ||
-                                                           displayToken.startsWith('·') ||
-                                                           displayToken.startsWith(' ');
-                                  if (needsSpaceBefore) {
-                                    displayToken = displayToken.slice(1);
-                                  }
-
-                                  // Check for newline tokens
-                                  const isNewline = displayToken === '\\n' ||
-                                                    displayToken === '\n' ||
-                                                    displayToken === '<0x0A>' ||
-                                                    displayToken === '<newline>' ||
-                                                    displayToken === '⏎';
-
-                                  if (isNewline) {
-                                    return <br key={tokenIdx} />;
-                                  }
+                            <div key={idx} className="bg-zinc-900/70 rounded-lg border border-zinc-700/50 overflow-hidden">
+                              {/* Messages breakdown */}
+                              <div className="divide-y divide-zinc-800">
+                                {parsed.messages.map((msg, msgIdx) => {
+                                  const roleColors = {
+                                    user: { bg: 'bg-blue-500/10', border: 'border-l-blue-500', label: 'text-blue-400' },
+                                    model: { bg: 'bg-emerald-500/10', border: 'border-l-emerald-500', label: 'text-emerald-400' },
+                                    system: { bg: 'bg-zinc-500/10', border: 'border-l-zinc-500', label: 'text-zinc-400' },
+                                  };
+                                  const colors = roleColors[msg.role];
 
                                   return (
-                                    <span key={tokenIdx}>
-                                      {needsSpaceBefore && tokenIdx > 0 && ' '}
-                                      <span
-                                        className={`rounded-sm ${
-                                          isMax
-                                            ? "bg-yellow-400/70 text-yellow-50 font-semibold px-0.5 py-0.5"
-                                            : intensity > 0.3
-                                            ? "bg-orange-500/60 text-orange-50 px-0.5"
-                                            : intensity > 0.05
-                                            ? "bg-zinc-500/50 text-zinc-100"
-                                            : "text-zinc-300"
-                                        }`}
-                                        title={`"${t.token}" - Activation: ${t.value.toFixed(3)}`}
-                                      >
-                                        {displayToken}
-                                      </span>
-                                    </span>
+                                    <div key={msgIdx} className={`p-3 ${colors.bg} border-l-2 ${colors.border}`}>
+                                      <div className="flex items-center justify-between mb-2">
+                                        <span className={`text-xs font-medium uppercase tracking-wide ${colors.label}`}>
+                                          {msg.role}
+                                        </span>
+                                        {msg.maxActivation > 0 && (
+                                          <span className="text-xs text-zinc-500">
+                                            max: <span className="text-yellow-300 font-mono">{msg.maxActivation.toFixed(3)}</span>
+                                          </span>
+                                        )}
+                                      </div>
+                                      <p className="text-sm leading-relaxed">
+                                        {msg.tokens.map((t, tokenIdx) => {
+                                          const maxVal = act.maxValue || 1;
+                                          const intensity = maxVal > 0 ? Math.min(t.activation / maxVal, 1) : 0;
+                                          const isMax = t.activation > 0 && t.activation === act.maxValue;
+
+                                          // Clean up token display
+                                          let displayToken = t.token;
+                                          const needsSpaceBefore = displayToken.startsWith('▁') ||
+                                                                   displayToken.startsWith('Ġ') ||
+                                                                   displayToken.startsWith('·') ||
+                                                                   displayToken.startsWith(' ');
+                                          if (needsSpaceBefore) {
+                                            displayToken = displayToken.slice(1);
+                                          }
+
+                                          // Check for newline tokens
+                                          const isNewline = displayToken === '\\n' ||
+                                                            displayToken === '\n' ||
+                                                            displayToken === '<0x0A>' ||
+                                                            displayToken === '<newline>' ||
+                                                            displayToken === '⏎';
+
+                                          if (isNewline) {
+                                            return <br key={tokenIdx} />;
+                                          }
+
+                                          return (
+                                            <span key={tokenIdx}>
+                                              {needsSpaceBefore && tokenIdx > 0 && ' '}
+                                              <span
+                                                className={`rounded-sm ${
+                                                  isMax
+                                                    ? "bg-yellow-400/70 text-yellow-50 font-semibold px-0.5 py-0.5"
+                                                    : intensity > 0.3
+                                                    ? "bg-orange-500/60 text-orange-50 px-0.5"
+                                                    : intensity > 0.05
+                                                    ? "bg-zinc-500/50 text-zinc-100"
+                                                    : "text-zinc-300"
+                                                }`}
+                                                title={`"${t.token}" - Activation: ${t.activation.toFixed(3)}`}
+                                              >
+                                                {displayToken}
+                                              </span>
+                                            </span>
+                                          );
+                                        })}
+                                      </p>
+                                    </div>
                                   );
                                 })}
-                              </p>
-                              <div className="mt-2 text-xs text-zinc-500">
-                                Max activation: <span className="text-yellow-300 font-mono">{act.maxValue.toFixed(3)}</span>
+                              </div>
+                              {/* Overall max activation */}
+                              <div className="px-3 py-2 bg-zinc-800/50 text-xs text-zinc-500 flex items-center justify-between">
+                                <span>Overall max activation:</span>
+                                <span className="text-yellow-300 font-mono">{act.maxValue.toFixed(3)}</span>
                               </div>
                             </div>
                           );
