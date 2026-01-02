@@ -2,9 +2,18 @@
 
 import { useState, useCallback } from "react";
 import { useFlowStore, useModelConfig } from "@/state/flowStore";
-import { SAE_PRESETS, detectModelSize, getSaeRepoForModelSize } from "@/types/flow";
-import type { SAEPreset } from "@/types/flow";
+import { SAE_PRESETS, SAE_L0_OPTIONS, MODEL_SIZE_CONFIGS, getSaeRepoForModelSize } from "@/types/flow";
+import type { SAEPreset, ModelSize } from "@/types/flow";
 import { configureModel, getSystemStatus } from "@/lib/api";
+
+// Model size options for dropdown
+const MODEL_SIZE_OPTIONS: { id: ModelSize; label: string }[] = [
+  { id: "270m", label: "270M" },
+  { id: "1b", label: "1B" },
+  { id: "4b", label: "4B" },
+  { id: "12b", label: "12B" },
+  { id: "27b", label: "27B" },
+];
 
 interface ModelSelectorProps {
   disabled?: boolean;
@@ -13,7 +22,7 @@ interface ModelSelectorProps {
 
 export function ModelSelector({ disabled = false, onConfigChange }: ModelSelectorProps) {
   const modelConfig = useModelConfig();
-  const { setModelPath, setSaePreset, getSaePreset, setSystemStatus } = useFlowStore();
+  const { setModelPath, setModelSize, setSaePreset, setSaeL0, getSaePreset, setSystemStatus } = useFlowStore();
 
   const [localModelPath, setLocalModelPath] = useState(modelConfig.modelPath);
   const [isEditing, setIsEditing] = useState(false);
@@ -25,6 +34,11 @@ export function ModelSelector({ disabled = false, onConfigChange }: ModelSelecto
   // Check if there are unapplied changes
   const hasChanges = localModelPath !== modelConfig.modelPath;
 
+  const handleModelSizeChange = useCallback((e: React.ChangeEvent<HTMLSelectElement>) => {
+    setModelSize(e.target.value as ModelSize);
+    onConfigChange?.();
+  }, [setModelSize, onConfigChange]);
+
   const handleModelPathBlur = useCallback(() => {
     setIsEditing(false);
   }, []);
@@ -33,6 +47,11 @@ export function ModelSelector({ disabled = false, onConfigChange }: ModelSelecto
     setSaePreset(e.target.value);
     onConfigChange?.();
   }, [setSaePreset, onConfigChange]);
+
+  const handleL0Change = useCallback((e: React.ChangeEvent<HTMLSelectElement>) => {
+    setSaeL0(e.target.value as "small" | "medium" | "big");
+    onConfigChange?.();
+  }, [setSaeL0, onConfigChange]);
 
   const handleApplyConfig = useCallback(async () => {
     if (isApplying || disabled) return;
@@ -43,17 +62,17 @@ export function ModelSelector({ disabled = false, onConfigChange }: ModelSelecto
     setApplyError(null);
 
     try {
-      // Detect model size and get appropriate SAE repo
-      const modelSize = detectModelSize(pathToApply);
-      const saeRepo = getSaeRepoForModelSize(modelSize);
+      // Use explicit model size from config
+      const saeRepo = getSaeRepoForModelSize(modelConfig.modelSize);
       const preset = currentPreset || SAE_PRESETS[0];
 
-      // Configure the backend
+      // Configure the backend with explicit model size
       await configureModel({
         model_name: pathToApply,
+        model_size: modelConfig.modelSize,
         sae_repo: saeRepo,
         sae_width: preset.width,
-        sae_l0: preset.l0,
+        sae_l0: modelConfig.saeL0,
         sae_type: preset.type,
       });
 
@@ -75,6 +94,8 @@ export function ModelSelector({ disabled = false, onConfigChange }: ModelSelecto
     disabled,
     localModelPath,
     modelConfig.modelPath,
+    modelConfig.modelSize,
+    modelConfig.saeL0,
     currentPreset,
     setModelPath,
     setSystemStatus,
@@ -93,10 +114,35 @@ export function ModelSelector({ disabled = false, onConfigChange }: ModelSelecto
 
   return (
     <div className="flex items-center gap-6">
+      {/* Model Size Dropdown */}
+      <div className="flex items-center gap-2">
+        <label className="text-sm text-zinc-400 font-medium whitespace-nowrap">
+          Size:
+        </label>
+        <select
+          value={modelConfig.modelSize}
+          onChange={handleModelSizeChange}
+          disabled={disabled || isApplying}
+          className={`
+            px-3 py-1.5 rounded-md text-sm
+            bg-zinc-800/50 border border-zinc-700
+            text-white
+            focus:outline-none focus:border-zinc-500
+            ${disabled || isApplying ? "opacity-50 cursor-not-allowed" : ""}
+          `}
+        >
+          {MODEL_SIZE_OPTIONS.map((option) => (
+            <option key={option.id} value={option.id}>
+              {option.label}
+            </option>
+          ))}
+        </select>
+      </div>
+
       {/* Model Path Input with Apply Button */}
       <div className="flex items-center gap-2">
         <label className="text-sm text-zinc-400 font-medium whitespace-nowrap">
-          Model:
+          Path:
         </label>
         <div className="flex items-center gap-1">
           <input
@@ -166,10 +212,10 @@ export function ModelSelector({ disabled = false, onConfigChange }: ModelSelecto
         )}
       </div>
 
-      {/* SAE Preset Dropdown */}
+      {/* SAE Width Dropdown */}
       <div className="flex items-center gap-2">
         <label className="text-sm text-zinc-400 font-medium whitespace-nowrap">
-          SAE:
+          Width:
         </label>
         <select
           value={modelConfig.saePresetId}
@@ -185,18 +231,37 @@ export function ModelSelector({ disabled = false, onConfigChange }: ModelSelecto
         >
           {SAE_PRESETS.map((preset) => (
             <option key={preset.id} value={preset.id}>
-              {preset.label}
+              {preset.width}
             </option>
           ))}
         </select>
       </div>
 
-      {/* Current config hint */}
-      {currentPreset && (
-        <span className="text-xs text-zinc-500">
-          {currentPreset.width} features
-        </span>
-      )}
+      {/* SAE L0 (Sparsity) Dropdown */}
+      <div className="flex items-center gap-2">
+        <label className="text-sm text-zinc-400 font-medium whitespace-nowrap">
+          L0:
+        </label>
+        <select
+          value={modelConfig.saeL0}
+          onChange={handleL0Change}
+          disabled={disabled}
+          title="SAE sparsity level - smaller = fewer features activate"
+          className={`
+            px-3 py-1.5 rounded-md text-sm
+            bg-zinc-800/50 border border-zinc-700
+            text-white
+            focus:outline-none focus:border-zinc-500
+            ${disabled ? "opacity-50 cursor-not-allowed" : ""}
+          `}
+        >
+          {SAE_L0_OPTIONS.map((option) => (
+            <option key={option.id} value={option.id} title={option.description}>
+              {option.label}
+            </option>
+          ))}
+        </select>
+      </div>
     </div>
   );
 }

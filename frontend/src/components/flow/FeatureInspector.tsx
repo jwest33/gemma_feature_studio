@@ -228,7 +228,7 @@ export function FeatureInspector({
                           Copy
                         </button>
                       </div>
-                      <pre className="text-sm text-zinc-300 whitespace-pre-wrap font-mono select-all">
+                      <pre className="text-sm text-zinc-300 whitespace-pre-wrap font-mono select-all pb-4">
                         {baselineOutput}
                       </pre>
                     </div>
@@ -243,7 +243,7 @@ export function FeatureInspector({
                           {copied ? "Copied!" : "Copy"}
                         </button>
                       </div>
-                      <pre className="text-sm text-zinc-200 whitespace-pre-wrap font-mono select-all">
+                      <pre className="text-sm text-zinc-200 whitespace-pre-wrap font-mono select-all pb-4">
                         {generatedOutput}
                       </pre>
                     </div>
@@ -265,7 +265,7 @@ export function FeatureInspector({
                         {copied ? "Copied!" : "Copy to Clipboard"}
                       </button>
                     </div>
-                    <pre className="text-sm text-zinc-200 whitespace-pre-wrap font-mono select-all">
+                    <pre className="text-sm text-zinc-200 whitespace-pre-wrap font-mono select-all pb-4">
                       {generatedOutput}
                     </pre>
                   </div>

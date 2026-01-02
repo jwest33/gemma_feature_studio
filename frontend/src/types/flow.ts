@@ -326,11 +326,23 @@ export function getSaePresetsForModelSize(size: ModelSize): SAEPreset[] {
 
 export interface ModelConfig {
   modelPath: string;
+  modelSize: ModelSize;
   saePresetId: string;
+  saeL0: "small" | "medium" | "big";
 }
+
+// L0 options for SAE sparsity (smaller = sparser = fewer features activate)
+export const SAE_L0_OPTIONS = [
+  { id: "small", label: "Small", description: "Sparse - fewer features, more interpretable" },
+  { id: "medium", label: "Medium", description: "Balanced sparsity" },
+  { id: "big", label: "Big", description: "Dense - more features, better reconstruction" },
+] as const;
+
+export type SAEL0 = typeof SAE_L0_OPTIONS[number]["id"];
 
 export interface ConfigureModelRequest {
   model_name: string;
+  model_size: ModelSize;
   sae_repo: string;
   sae_width: string;
   sae_l0: string;

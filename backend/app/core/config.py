@@ -11,11 +11,12 @@ BACKEND_DIR = Path(__file__).resolve().parent.parent.parent
 # Model Size Configuration
 # =============================================================================
 
-# Maps model size identifiers to their available SAE layers and SAE repos
+# Maps model size identifiers to their available SAE layers, SAE repos, and hidden dimensions
 # Layers are at approximately 25%, 50%, 65%, and 85% depth
 MODEL_LAYER_CONFIGS = {
     "270m": {
         "layers": [5, 9, 12, 15],
+        "hidden_size": 1152,
         "sae_repo_it": "google/gemma-scope-2-270m-it",
         "sae_repo_pt": "google/gemma-scope-2-270m-pt",
         "model_it": "google/gemma-3-270m-it",
@@ -24,6 +25,7 @@ MODEL_LAYER_CONFIGS = {
     },
     "1b": {
         "layers": [7, 13, 17, 22],
+        "hidden_size": 2560,
         "sae_repo_it": "google/gemma-scope-2-1b-it",
         "sae_repo_pt": "google/gemma-scope-2-1b-pt",
         "model_it": "google/gemma-3-1b-it",
@@ -32,6 +34,7 @@ MODEL_LAYER_CONFIGS = {
     },
     "4b": {
         "layers": [9, 17, 22, 29],
+        "hidden_size": 4096,
         "sae_repo_it": "google/gemma-scope-2-4b-it",
         "sae_repo_pt": "google/gemma-scope-2-4b-pt",
         "model_it": "google/gemma-3-4b-it",
@@ -40,6 +43,7 @@ MODEL_LAYER_CONFIGS = {
     },
     "12b": {
         "layers": [12, 24, 31, 41],
+        "hidden_size": 3840,
         "sae_repo_it": "google/gemma-scope-2-12b-it",
         "sae_repo_pt": "google/gemma-scope-2-12b-pt",
         "model_it": "google/gemma-3-12b-it",
@@ -48,6 +52,7 @@ MODEL_LAYER_CONFIGS = {
     },
     "27b": {
         "layers": [16, 31, 40, 53],
+        "hidden_size": 5376,
         "sae_repo_it": "google/gemma-scope-2-27b-it",
         "sae_repo_pt": "google/gemma-scope-2-27b-pt",
         "model_it": "google/gemma-3-27b-it",
@@ -93,7 +98,7 @@ def get_model_config(model_name: str) -> dict:
     """
     Get the configuration for a model based on its name.
 
-    Returns dict with 'layers', 'sae_repo', 'neuronpedia_model_id'.
+    Returns dict with 'layers', 'sae_repo', 'neuronpedia_model_id', 'hidden_size'.
     """
     size = detect_model_size(model_name)
     config = MODEL_LAYER_CONFIGS.get(size, MODEL_LAYER_CONFIGS[DEFAULT_MODEL_SIZE])
@@ -104,6 +109,7 @@ def get_model_config(model_name: str) -> dict:
     return {
         "size": size,
         "layers": config["layers"],
+        "hidden_size": config["hidden_size"],
         "sae_repo": config["sae_repo_pt"] if is_pt else config["sae_repo_it"],
         "neuronpedia_model_id": config["neuronpedia_model_id"],
     }
@@ -137,11 +143,11 @@ class Settings(BaseSettings):
 
     # Inference settings
     device: str = "cuda"
-    dtype: str = "float32"
+    dtype: str = "bfloat16"  # Use bfloat16 for large models to fit in VRAM
     top_k_features: int = 50
 
     # Generation settings
-    max_new_tokens: int = 256
+    max_new_tokens: int = 64  # Keep low to prevent generation timeouts
     default_temperature: float = 0.7
 
     # Neuronpedia API settings
@@ -171,15 +177,27 @@ class RuntimeConfig:
         # Initialize model-specific config
         self._update_model_config()
 
-    def _update_model_config(self):
-        """Update model-specific configuration based on model name."""
-        model_config = get_model_config(self.model_name)
-        self.model_size: str = model_config["size"]
-        self.available_layers: list[int] = model_config["layers"]
-        self.neuronpedia_model_id: str = model_config["neuronpedia_model_id"]
+    def _update_model_config(self, explicit_size: str | None = None):
+        """Update model-specific configuration based on explicit size or model name."""
+        if explicit_size and explicit_size in MODEL_LAYER_CONFIGS:
+            # Use explicit model size
+            self.model_size = explicit_size
+            config = MODEL_LAYER_CONFIGS[explicit_size]
+            is_pt = "-pt" in self.model_name.lower()
+            self.available_layers = config["layers"]
+            self.hidden_size = config["hidden_size"]
+            self.neuronpedia_model_id = config["neuronpedia_model_id"]
+            expected_sae_repo = config["sae_repo_pt"] if is_pt else config["sae_repo_it"]
+        else:
+            # Infer from model name (fallback)
+            model_config = get_model_config(self.model_name)
+            self.model_size = model_config["size"]
+            self.available_layers = model_config["layers"]
+            self.hidden_size = model_config["hidden_size"]
+            self.neuronpedia_model_id = model_config["neuronpedia_model_id"]
+            expected_sae_repo = model_config["sae_repo"]
 
         # Auto-update SAE repo if it doesn't match the model size
-        expected_sae_repo = model_config["sae_repo"]
         if self.sae_repo != expected_sae_repo:
             print(f"Auto-updating SAE repo from {self.sae_repo} to {expected_sae_repo}")
             self.sae_repo = expected_sae_repo
@@ -193,6 +211,7 @@ class RuntimeConfig:
     def update(
         self,
         model_name: str | None = None,
+        model_size: str | None = None,
         sae_repo: str | None = None,
         sae_width: str | None = None,
         sae_l0: str | None = None,
@@ -207,8 +226,9 @@ class RuntimeConfig:
 
         if model_name is not None:
             self.model_name = model_name
-            # Update model-specific config when model changes
-            self._update_model_config()
+        # Update model-specific config with explicit size (or infer from name)
+        if model_name is not None or model_size is not None:
+            self._update_model_config(explicit_size=model_size)
         if sae_repo is not None:
             self.sae_repo = sae_repo
         if sae_width is not None:
@@ -232,6 +252,7 @@ class RuntimeConfig:
         return {
             "model_name": self.model_name,
             "model_size": self.model_size,
+            "hidden_size": self.hidden_size,
             "sae_repo": self.sae_repo,
             "sae_width": self.sae_width,
             "sae_l0": self.sae_l0,

@@ -69,12 +69,12 @@ function OutputCard({ title, output, isStreaming, error, variant }: OutputCardPr
         {error ? (
           <div className="text-red-400 text-sm">{error}</div>
         ) : output ? (
-          <div className="text-zinc-200 text-sm whitespace-pre-wrap font-mono leading-relaxed">
+          <div className="text-zinc-200 text-sm whitespace-pre-wrap font-mono leading-relaxed pb-4">
             {output}
             {isStreaming && <span className="inline-block w-2 h-4 bg-white/70 animate-pulse ml-0.5" />}
           </div>
         ) : (
-          <div className="text-zinc-600 text-sm italic">
+          <div className="text-zinc-600 text-sm italic pb-4">
             {isStreaming ? "Waiting for response..." : "No output yet"}
           </div>
         )}

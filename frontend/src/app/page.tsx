@@ -12,8 +12,8 @@ import {
 import { LayerSelector, VRAMMonitor, PromptManager, ModelSelector } from "@/components/controls";
 import { FlowVisualization, FeatureInspector, ResizablePanel } from "@/components/flow";
 import { GlobalSteeringPanel } from "@/components/GlobalSteeringPanel";
-import { analyzeMultiLayer, loadSAEs, generateTextStream, configureModel, getConfig } from "@/lib/api";
-import { SAE_PRESETS, detectModelSize, getSaeRepoForModelSize } from "@/types/flow";
+import { analyzeMultiLayer, loadSAEs, generateTextStream, configureModel, getConfig, getSystemStatus } from "@/lib/api";
+import { SAE_PRESETS, getSaeRepoForModelSize } from "@/types/flow";
 import type { GenerateRequest } from "@/types/analysis";
 
 export default function Home() {
@@ -31,6 +31,7 @@ export default function Home() {
     modelConfig,
     getSaePreset,
     setModelPath,
+    setSystemStatus,
   } = useFlowStore();
 
   const activePrompt = useFlowStore((state) => state.getActivePrompt());
@@ -48,18 +49,60 @@ export default function Home() {
   const [isGenerating, setIsGenerating] = useState(false);
   const abortControllerRef = useRef<AbortController | null>(null);
 
-  // Fetch backend config on mount to sync model path from .env
+  // Track if we've initialized the backend
+  const [hasInitialized, setHasInitialized] = useState(false);
+  const hasHydrated = useFlowStore((state) => state._hasHydrated);
+
+  // On mount (after hydration): configure backend with persisted model settings
   useEffect(() => {
-    getConfig()
-      .then((config) => {
-        if (config.config.model_name) {
-          setModelPath(config.config.model_name);
+    // Wait for store to hydrate from localStorage
+    if (!hasHydrated || hasInitialized) return;
+
+    const initBackend = async () => {
+      try {
+        // Get current state after hydration
+        const state = useFlowStore.getState();
+        const currentConfig = state.modelConfig;
+        const preset = SAE_PRESETS.find(p => p.id === currentConfig.saePresetId) || SAE_PRESETS[0];
+        const saeRepo = getSaeRepoForModelSize(currentConfig.modelSize);
+
+        // Configure backend with the frontend's persisted model config
+        await configureModel({
+          model_name: currentConfig.modelPath,
+          model_size: currentConfig.modelSize,
+          sae_repo: saeRepo,
+          sae_width: preset.width,
+          sae_l0: currentConfig.saeL0,
+          sae_type: preset.type,
+        });
+
+        // Now fetch system status - it will have the correct available_layers
+        const status = await getSystemStatus();
+        state.setSystemStatus(status);
+
+        // Validate that selectedLayers contains valid layers for the current model
+        // If not, reset to the first available layer
+        if (status.available_layers && status.available_layers.length > 0) {
+          const currentSelectedLayers = state.selectedLayers;
+          const validLayers = currentSelectedLayers.filter(l => status.available_layers.includes(l));
+          if (validLayers.length === 0) {
+            // No valid layers selected, reset to first available
+            state.setSelectedLayers([status.available_layers[0]]);
+          } else if (validLayers.length !== currentSelectedLayers.length) {
+            // Some invalid layers, update to only valid ones
+            state.setSelectedLayers(validLayers);
+          }
         }
-      })
-      .catch((err) => {
-        console.error("Failed to fetch backend config:", err);
-      });
-  }, [setModelPath]);
+
+        setHasInitialized(true);
+      } catch (err) {
+        console.error("Failed to initialize backend config:", err);
+        setHasInitialized(true); // Mark as initialized even on error to prevent retry loop
+      }
+    };
+
+    initBackend();
+  }, [hasHydrated, hasInitialized]);
 
   // Generate LLM response for a prompt (no steering)
   const generateResponse = useCallback(async (promptText: string) => {
@@ -75,13 +118,16 @@ export default function Home() {
 
     try {
       let output = "";
+      console.log("[Generate] Starting stream...");
       for await (const token of generateTextStream(
-        { prompt: promptText, steering: [], max_tokens: 256 },
+        { prompt: promptText, steering: [], max_tokens: 64 },
         abortControllerRef.current.signal
       )) {
         output += token;
+        console.log("[Generate] Setting output:", output.length, "chars");
         setGeneratedOutput(output);
       }
+      console.log("[Generate] Stream complete");
     } catch (e) {
       if ((e as Error).name !== "AbortError") {
         console.error("Generation error:", e);
@@ -121,7 +167,7 @@ export default function Home() {
         const baselineRequest: GenerateRequest = {
           prompt: promptText,
           steering: [],
-          max_tokens: 256,
+          max_tokens: 64,
           normalization: "none",
         };
 
@@ -143,7 +189,7 @@ export default function Home() {
           coefficient: f.coefficient,
           layer: f.layer,
         })),
-        max_tokens: 256,
+        max_tokens: 64,
         normalization: steeringNormalization,
         norm_clamp_factor: steeringClampFactor,
         unit_normalize: steeringUnitNormalize,
@@ -177,15 +223,15 @@ export default function Home() {
       const preset = getSaePreset();
       if (!preset) return;
 
-      // Get the correct SAE repo for the model size
-      const modelSize = detectModelSize(modelConfig.modelPath);
-      const saeRepo = getSaeRepoForModelSize(modelSize);
+      // Get the correct SAE repo for the explicit model size
+      const saeRepo = getSaeRepoForModelSize(modelConfig.modelSize);
 
       await configureModel({
         model_name: modelConfig.modelPath,
+        model_size: modelConfig.modelSize,
         sae_repo: saeRepo,
         sae_width: preset.width,
-        sae_l0: preset.l0,
+        sae_l0: modelConfig.saeL0,
         sae_type: preset.type,
       });
     } catch (e) {
@@ -209,35 +255,68 @@ export default function Home() {
       // First, ensure model config is applied
       const preset = getSaePreset();
       if (preset) {
-        // Get the correct SAE repo for the model size (not the hardcoded 4B repo)
-        const modelSize = detectModelSize(modelConfig.modelPath);
-        const saeRepo = getSaeRepoForModelSize(modelSize);
+        // Get the correct SAE repo for the explicit model size
+        const saeRepo = getSaeRepoForModelSize(modelConfig.modelSize);
 
         await configureModel({
           model_name: modelConfig.modelPath,
+          model_size: modelConfig.modelSize,
           sae_repo: saeRepo,
           sae_width: preset.width,
-          sae_l0: preset.l0,
+          sae_l0: modelConfig.saeL0,
           sae_type: preset.type,
         });
-      }
 
-      // Then, ensure SAEs are loaded for selected layers
-      await loadSAEs({ layers: selectedLayers });
+        // Refresh system status to get updated available_layers after model config
+        const status = await getSystemStatus();
+        setSystemStatus(status);
 
-      // Analyze each prompt
-      for (let i = 0; i < prompts.length; i++) {
-        setAnalysisProgress(i + 1, prompts.length);
-        const prompt = prompts[i];
+        // Check if selectedLayers are valid for the new model
+        // If not, use the first available layer from the new status
+        const validLayers = selectedLayers.filter(l => status.available_layers.includes(l));
+        const layersToUse = validLayers.length > 0 ? validLayers : [status.available_layers[0]];
 
-        const response = await analyzeMultiLayer({
-          prompt: prompt.text,
-          layers: selectedLayers,
-          top_k: 50,
-          include_bos: false,
-        });
+        // Update selectedLayers in the store to match the layers we're actually analyzing
+        // This ensures FlowVisualization looks for data under the correct layer keys
+        if (validLayers.length === 0 || validLayers.length !== selectedLayers.length) {
+          useFlowStore.getState().setSelectedLayers(layersToUse);
+        }
 
-        updatePromptAnalysis(prompt.id, response);
+        // Then, ensure SAEs are loaded for selected layers
+        await loadSAEs({ layers: layersToUse });
+
+        // Analyze each prompt with valid layers
+        for (let i = 0; i < prompts.length; i++) {
+          setAnalysisProgress(i + 1, prompts.length);
+          const prompt = prompts[i];
+
+          const response = await analyzeMultiLayer({
+            prompt: prompt.text,
+            layers: layersToUse,
+            top_k: 50,
+            include_bos: false,
+          });
+
+          updatePromptAnalysis(prompt.id, response);
+        }
+      } else {
+        // No preset, just load SAEs for selected layers
+        await loadSAEs({ layers: selectedLayers });
+
+        // Analyze each prompt
+        for (let i = 0; i < prompts.length; i++) {
+          setAnalysisProgress(i + 1, prompts.length);
+          const prompt = prompts[i];
+
+          const response = await analyzeMultiLayer({
+            prompt: prompt.text,
+            layers: selectedLayers,
+            top_k: 50,
+            include_bos: false,
+          });
+
+          updatePromptAnalysis(prompt.id, response);
+        }
       }
 
       // Auto-generate response if there's only one prompt
@@ -259,6 +338,7 @@ export default function Home() {
     generateResponse,
     modelConfig,
     getSaePreset,
+    setSystemStatus,
   ]);
 
   return (

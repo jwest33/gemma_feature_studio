@@ -60,7 +60,7 @@ class ModelManager:
     _initialized: bool = False
     _activation_cache: dict = {}
     _hooks: list = []
-    _d_model: int = 4096  # Model hidden dimension (updated when model loads)
+    _d_model: int = 4096  # Model hidden dimension (updated from runtime_config or when model loads)
 
     # Multi-SAE support
     _vram_monitor: Optional[VRAMMonitor] = None
@@ -80,6 +80,9 @@ class ModelManager:
             # Strict memory mode: only keep 1 SAE loaded at a time
             # Useful for 12B+ models where VRAM is very tight
             cls._strict_memory_mode = True
+            # Initialize d_model from runtime config (updated when model actually loads)
+            runtime_config = get_runtime_config()
+            cls._d_model = runtime_config.hidden_size
         return cls._instance
 
     @property
@@ -156,6 +159,16 @@ class ModelManager:
         # Get model's hidden dimension for accurate SAE size estimation
         self._d_model = self._get_model_hidden_size()
 
+        # Ensure runtime config is updated to match the loaded model
+        # This handles cases where model was loaded from a local path
+        # that differs from what was in the config
+        if runtime_config.model_name != model_name:
+            runtime_config.update(model_name=model_name)
+        else:
+            # Force update model config even if name matches
+            # (ensures layers/hidden_size are correct after restart)
+            runtime_config._update_model_config()
+
         self._initialized = True
         print("Model loaded successfully (SAEs loaded on-demand)")
         print(f"  Model: {model_name}")
@@ -168,8 +181,9 @@ class ModelManager:
 
     def _get_model_hidden_size(self) -> int:
         """Get the hidden dimension of the loaded model."""
+        runtime_config = get_runtime_config()
         if self._model is None:
-            return 4096  # Default fallback
+            return runtime_config.hidden_size  # Use config-based estimate
 
         config = self._model.config
 
@@ -191,10 +205,10 @@ class ModelManager:
                 print(f"  Found {attr}={value} in config")
                 return value
 
-        print(f"  Warning: Could not find hidden_size, using default 4096")
+        print(f"  Warning: Could not find hidden_size, using config-based value: {runtime_config.hidden_size}")
         print(f"  Config type: {type(config).__name__}")
         print(f"  Config attrs: {[a for a in dir(config) if not a.startswith('_')][:20]}")
-        return 4096
+        return runtime_config.hidden_size
 
     def _estimate_sae_size(self, width: str, dtype: torch.dtype = torch.float32) -> int:
         """
@@ -292,6 +306,9 @@ class ModelManager:
         dtype = torch.float32 if settings.dtype == "float32" else torch.bfloat16
         available_layers = get_available_layers()
 
+        # Use actual model hidden size for accurate SAE size estimation
+        d_model = self._d_model if self._initialized else runtime_config.hidden_size
+
         # Calculate bytes needed for new SAEs (not already loaded)
         bytes_needed = 0
         layers_to_load = []
@@ -303,7 +320,7 @@ class ModelManager:
             if self._sae_registry.is_loaded(layer, width, runtime_config.sae_l0, runtime_config.sae_type):
                 already_loaded.append(layer)
             else:
-                bytes_needed += self._vram_monitor.estimate_sae_size(width, dtype)
+                bytes_needed += self._vram_monitor.estimate_sae_size(width, dtype, d_model)
                 layers_to_load.append(layer)
 
         snapshot = self._vram_monitor.get_snapshot()
@@ -397,6 +414,17 @@ class ModelManager:
             snapshot = self._vram_monitor.get_snapshot()
             print(f"After cache clear: {snapshot.free_gb:.2f}GB free")
 
+            # Check again - if still not enough VRAM, fail early with clear message
+            if not self._vram_monitor.can_allocate(estimated_size):
+                needed_gb = estimated_size / (1024**3)
+                available_gb = snapshot.free_gb
+                raise MemoryError(
+                    f"Insufficient VRAM to load SAE for layer {layer}. "
+                    f"Need ~{needed_gb:.2f}GB but only {available_gb:.2f}GB available. "
+                    f"The model is using {snapshot.allocated_gb:.1f}GB. "
+                    f"Try using a smaller model or a smaller SAE width (e.g., 16k instead of {width})."
+                )
+
         # Build SAE path and download using runtime config
         sae_subdir = f"{sae_type}/layer_{layer}_width_{width}_l0_{l0}"
         sae_filename = f"{sae_subdir}/params.safetensors"
@@ -407,12 +435,36 @@ class ModelManager:
             filename=sae_filename,
         )
 
-        params = load_file(path_to_params, device=device)
-        d_model, d_sae = params["w_enc"].shape
+        # Load SAE to CPU first to avoid OOM crash, then transfer to GPU
+        # This allows proper error handling if GPU transfer fails
+        try:
+            params = load_file(path_to_params, device="cpu")
+            d_model, d_sae = params["w_enc"].shape
+        except Exception as e:
+            raise RuntimeError(f"Failed to load SAE parameters from {path_to_params}: {e}")
 
         sae = JumpReLUSAE(d_model, d_sae)
         sae.load_state_dict(params)
-        sae.to(device)
+
+        # Free CPU params now that they're loaded into the module
+        del params
+
+        # Transfer to GPU with proper error handling
+        try:
+            sae.to(device)
+        except RuntimeError as e:
+            # Clean up
+            del sae
+            torch.cuda.empty_cache()
+            if "out of memory" in str(e).lower() or "CUDA" in str(e):
+                snapshot = self._vram_monitor.get_snapshot()
+                raise MemoryError(
+                    f"Out of GPU memory transferring SAE for layer {layer} to device. "
+                    f"Available: {snapshot.free_gb:.2f}GB. "
+                    f"Try using a smaller model or SAE width (16k instead of {width})."
+                ) from e
+            raise
+
         sae.eval()
 
         # Calculate actual size

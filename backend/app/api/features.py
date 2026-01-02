@@ -2,6 +2,7 @@ import logging
 import traceback
 import time
 import uuid
+import asyncio
 
 from fastapi import APIRouter, HTTPException
 from sse_starlette.sse import EventSourceResponse
@@ -108,9 +109,10 @@ async def configure_model(request: ConfigureModelRequest):
     # Check if model was previously loaded
     was_loaded = manager.is_loaded
 
-    # Update runtime config
+    # Update runtime config with explicit model size
     requires_reload = runtime_config.update(
         model_name=request.model_name,
+        model_size=request.model_size,
         sae_repo=request.sae_repo,
         sae_width=request.sae_width,
         sae_l0=request.sae_l0,
@@ -248,6 +250,8 @@ async def generate_stream(request: GenerateRequest):
                     "event": "token",
                     "data": json.dumps({"token": token}),
                 }
+                # Yield control to event loop to flush SSE response
+                await asyncio.sleep(0)
             yield {
                 "event": "done",
                 "data": json.dumps({"status": "complete"}),
@@ -568,6 +572,7 @@ async def analyze_batch_stream(request: BatchAnalyzeRequest):
                     "completed": completed,
                 }),
             }
+            await asyncio.sleep(0)  # Flush SSE
 
             prompt_id = str(uuid.uuid4())
             try:
@@ -639,6 +644,7 @@ async def analyze_batch_stream(request: BatchAnalyzeRequest):
                     "result": prompt_result,
                 }),
             }
+            await asyncio.sleep(0)  # Flush SSE
 
         yield {
             "event": "complete",

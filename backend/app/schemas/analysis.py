@@ -55,7 +55,7 @@ class GenerateRequest(BaseModel):
     steering: list[SteeringFeature] = Field(
         default=[], description="Features to steer during generation"
     )
-    max_tokens: int = Field(default=128, ge=1, le=512)
+    max_tokens: int = Field(default=64, ge=1, le=256)
     temperature: float = Field(default=0.7, ge=0.0, le=2.0)
     include_baseline: bool = Field(
         default=True, description="Also generate without steering for comparison"
@@ -290,6 +290,7 @@ class NeuronpediaFeatureResponse(BaseModel):
 class ConfigureModelRequest(BaseModel):
     """Request to configure model and SAE settings."""
     model_name: str = Field(..., description="HuggingFace model ID or local path")
+    model_size: str = Field(default="4b", description="Model size (270m, 1b, 4b, 12b, 27b)")
     sae_repo: str = Field(..., description="HuggingFace SAE repository ID")
     sae_width: str = Field(default="65k", description="SAE width (16k, 65k, 262k, 1m)")
     sae_l0: str = Field(default="medium", description="L0 regularization level")

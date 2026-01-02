@@ -97,7 +97,9 @@ interface FlowState {
 
   // Actions - Model Configuration
   setModelPath: (path: string) => void;
+  setModelSize: (size: ModelSize) => void;
   setSaePreset: (presetId: string) => void;
+  setSaeL0: (l0: "small" | "medium" | "big") => void;
   getSaePreset: () => SAEPreset | undefined;
 
   // Actions - Prompts
@@ -185,7 +187,9 @@ export const useFlowStore = create<FlowState>()(
       // Initial State
       modelConfig: {
         modelPath: "google/gemma-3-4b-it",
+        modelSize: "4b" as ModelSize,
         saePresetId: "gemmascope-2-res-65k",
+        saeL0: "medium",
       },
       prompts: [],
       activePromptId: null,
@@ -225,23 +229,18 @@ export const useFlowStore = create<FlowState>()(
       // ======================================================================
 
       setModelPath: (path: string) => {
+        set((state) => ({
+          modelConfig: { ...state.modelConfig, modelPath: path },
+        }));
+      },
+
+      setModelSize: (size: ModelSize) => {
         set((state) => {
-          // Detect model size from the path
-          const newModelSize = detectModelSize(path);
-          const oldModelSize = detectModelSize(state.modelConfig.modelPath);
-
-          // If model size changed, update selected layers to match new model
-          if (newModelSize !== oldModelSize) {
-            const newLayers = getLayersForModelSize(newModelSize);
-            // Select the first layer of the new model
-            return {
-              modelConfig: { ...state.modelConfig, modelPath: path },
-              selectedLayers: [newLayers[0]],
-            };
-          }
-
+          const newLayers = getLayersForModelSize(size);
+          // Select the first layer of the new model
           return {
-            modelConfig: { ...state.modelConfig, modelPath: path },
+            modelConfig: { ...state.modelConfig, modelSize: size },
+            selectedLayers: [newLayers[0]],
           };
         });
       },
@@ -249,6 +248,12 @@ export const useFlowStore = create<FlowState>()(
       setSaePreset: (presetId: string) => {
         set((state) => ({
           modelConfig: { ...state.modelConfig, saePresetId: presetId },
+        }));
+      },
+
+      setSaeL0: (l0: "small" | "medium" | "big") => {
+        set((state) => ({
+          modelConfig: { ...state.modelConfig, saeL0: l0 },
         }));
       },
 
@@ -375,19 +380,19 @@ export const useFlowStore = create<FlowState>()(
 
       selectAllLayers: () => {
         const { systemStatus, modelConfig } = get();
-        // Use backend layers or fallback to model config detection
+        // Use backend layers or fallback to explicit model size
         const availableLayers = (systemStatus?.available_layers && systemStatus.available_layers.length > 0)
           ? systemStatus.available_layers
-          : getLayersForModelSize(detectModelSize(modelConfig.modelPath));
+          : getLayersForModelSize(modelConfig.modelSize);
         set({ selectedLayers: [...availableLayers] });
       },
 
       clearLayerSelection: () => {
         const { systemStatus, modelConfig } = get();
-        // Use backend layers or fallback to model config detection
+        // Use backend layers or fallback to explicit model size
         const availableLayers = (systemStatus?.available_layers && systemStatus.available_layers.length > 0)
           ? systemStatus.available_layers
-          : getLayersForModelSize(detectModelSize(modelConfig.modelPath));
+          : getLayersForModelSize(modelConfig.modelSize);
         // Reset to the first available layer
         set({ selectedLayers: [availableLayers[0]] });
       },
@@ -403,45 +408,9 @@ export const useFlowStore = create<FlowState>()(
             return { systemStatus: status };
           }
 
-          const updates: Partial<FlowState> = { systemStatus: status };
-
-          // Sync modelConfig.modelPath with backend's loaded model if they differ
-          // This handles cases where the backend has a different model than what frontend expects
-          if (status.model_name && status.model_name !== state.modelConfig.modelPath) {
-            const frontendSize = detectModelSize(state.modelConfig.modelPath);
-            const backendSize = status.model_size || detectModelSize(status.model_name);
-
-            if (frontendSize !== backendSize) {
-              console.log(
-                `[flowStore] Backend model (${status.model_name}) differs from frontend (${state.modelConfig.modelPath}). Syncing...`
-              );
-              updates.modelConfig = {
-                ...state.modelConfig,
-                modelPath: status.model_name,
-              };
-            }
-          }
-
-          // Validate that current selectedLayers are still valid for the new available_layers
-          const validSelectedLayers = state.selectedLayers.filter(
-            (layer) => status.available_layers.includes(layer)
-          );
-
-          // If all selected layers are invalid, reset to the first available layer
-          if (validSelectedLayers.length === 0) {
-            console.log(
-              `[flowStore] Selected layers ${state.selectedLayers} not in available layers ${status.available_layers}. Resetting to [${status.available_layers[0]}]`
-            );
-            updates.selectedLayers = [status.available_layers[0]];
-          } else if (validSelectedLayers.length !== state.selectedLayers.length) {
-            // If some layers were removed, update the selection
-            console.log(
-              `[flowStore] Some selected layers not available. Updating from ${state.selectedLayers} to ${validSelectedLayers}`
-            );
-            updates.selectedLayers = validSelectedLayers;
-          }
-
-          return updates;
+          // Just update the system status - don't auto-reset layers
+          // Layer selection is managed by setModelSize and explicit user actions
+          return { systemStatus: status };
         });
       },
 
@@ -724,13 +693,12 @@ export const useFlowStore = create<FlowState>()(
 
       getAvailableLayers: () => {
         const { systemStatus, modelConfig } = get();
-        // Prefer backend's available_layers, fallback to model config detection
+        // Prefer backend's available_layers, fallback to explicit model size
         if (systemStatus?.available_layers && systemStatus.available_layers.length > 0) {
           return systemStatus.available_layers;
         }
-        // Fallback: detect from model path
-        const modelSize = detectModelSize(modelConfig.modelPath);
-        return getLayersForModelSize(modelSize);
+        // Fallback: use explicit model size from config
+        return getLayersForModelSize(modelConfig.modelSize);
       },
 
       canAnalyze: () => {
@@ -745,7 +713,8 @@ export const useFlowStore = create<FlowState>()(
         // Only persist these fields
         modelConfig: state.modelConfig,
         selectedLayers: state.selectedLayers,
-        filters: state.filters,
+        // Don't persist filters - minActivation is model-dependent and would cause issues
+        // when switching between models with different activation scales
         panelConfig: state.panelConfig,
         // Persist steering settings (but not features - they're transient)
         steeringNormalization: state.steeringNormalization,

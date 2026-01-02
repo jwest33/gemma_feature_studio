@@ -28,6 +28,8 @@ import type {
 } from "@/types/flow";
 
 const API_BASE = "/api";
+// Direct backend URL for streaming endpoints (Next.js rewrites buffer SSE responses)
+const BACKEND_DIRECT = "http://localhost:8000/api";
 
 async function fetchJson<T>(
   endpoint: string,
@@ -86,7 +88,8 @@ export async function* generateTextStream(
   request: GenerateRequest,
   signal?: AbortSignal
 ): AsyncGenerator<string, void, unknown> {
-  const response = await fetch(`${API_BASE}/generate/stream`, {
+  // Use direct backend URL to bypass Next.js proxy buffering
+  const response = await fetch(`${BACKEND_DIRECT}/generate/stream`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -112,18 +115,22 @@ export async function* generateTextStream(
     if (done) break;
 
     buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split("\n");
+    // Split by newlines and handle \r\n properly
+    const lines = buffer.split(/\r?\n/);
     buffer = lines.pop() || "";
 
     for (const line of lines) {
-      if (line.startsWith("data: ")) {
+      const trimmedLine = line.trim();
+      if (trimmedLine.startsWith("data: ")) {
         try {
-          const data = JSON.parse(line.slice(6));
+          const jsonStr = trimmedLine.slice(6);
+          const data = JSON.parse(jsonStr);
           if (data.token) {
+            console.log("[SSE] Token received:", data.token);
             yield data.token;
           }
-        } catch {
-          // Ignore parse errors
+        } catch (e) {
+          console.error("[SSE] Parse error:", e, "for line:", trimmedLine);
         }
       }
     }
@@ -217,7 +224,8 @@ export async function* analyzeBatchStream(
   request: BatchAnalyzeRequest,
   signal?: AbortSignal
 ): AsyncGenerator<BatchStreamEvent, void, unknown> {
-  const response = await fetch(`${API_BASE}/analyze/batch/stream`, {
+  // Use direct backend URL to bypass Next.js proxy buffering
+  const response = await fetch(`${BACKEND_DIRECT}/analyze/batch/stream`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",

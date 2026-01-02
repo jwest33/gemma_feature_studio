@@ -52,14 +52,6 @@ class VRAMSnapshot:
 class VRAMMonitor:
     """Monitors GPU VRAM usage and provides allocation guidance."""
 
-    # SAE size estimates (bytes) for d_model=4096
-    SAE_SIZE_ESTIMATES = {
-        "16k": 134_217_728,      # ~128MB
-        "65k": 536_870_912,      # ~512MB
-        "262k": 2_147_483_648,   # ~2GB
-        "1m": 8_589_934_592,     # ~8GB
-    }
-
     def __init__(self, device: str = "cuda", safety_margin_gb: float = 2.0):
         """
         Initialize VRAM monitor.
@@ -135,9 +127,9 @@ class VRAMMonitor:
         snapshot = self.get_snapshot()
         return snapshot.free_bytes > (bytes_needed + self.safety_margin_bytes)
 
-    def estimate_sae_size(self, width: str, dtype: torch.dtype = torch.float32) -> int:
+    def estimate_sae_size(self, width: str, dtype: torch.dtype = torch.float32, d_model: int = 4096) -> int:
         """
-        Estimate SAE memory footprint based on width.
+        Estimate SAE memory footprint based on width and model hidden dimension.
 
         The SAE has these parameters:
         - w_enc: (d_model, d_sae) - encoder weights
@@ -149,13 +141,11 @@ class VRAMMonitor:
         Args:
             width: SAE width string (16k, 65k, 262k, 1m)
             dtype: Data type for parameters
+            d_model: Model hidden dimension (varies by model size)
 
         Returns:
             Estimated size in bytes
         """
-        # d_model for Gemma-3-4B is 4096
-        d_model = 4096
-
         width_map = {
             "16k": 16384,
             "65k": 65536,
@@ -190,19 +180,20 @@ class VRAMMonitor:
         snapshot = self.get_snapshot()
         return max(0, snapshot.free_bytes - self.safety_margin_bytes)
 
-    def suggest_max_layers(self, width: str = "65k", dtype: torch.dtype = torch.float32) -> int:
+    def suggest_max_layers(self, width: str = "65k", dtype: torch.dtype = torch.float32, d_model: int = 4096) -> int:
         """
         Suggest maximum number of SAE layers that can be loaded.
 
         Args:
             width: SAE width string
             dtype: Data type for SAE parameters
+            d_model: Model hidden dimension
 
         Returns:
             Maximum number of layers (0-4)
         """
         available = self.get_available_for_saes()
-        sae_size = self.estimate_sae_size(width, dtype)
+        sae_size = self.estimate_sae_size(width, dtype, d_model)
 
         if sae_size == 0:
             return 0
