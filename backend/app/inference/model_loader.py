@@ -433,6 +433,7 @@ class ModelManager:
         path_to_params = hf_hub_download(
             repo_id=runtime_config.sae_repo,
             filename=sae_filename,
+            local_files_only=True,
         )
 
         # Load SAE to CPU first to avoid OOM crash, then transfer to GPU
@@ -441,7 +442,18 @@ class ModelManager:
             params = load_file(path_to_params, device="cpu")
             d_model, d_sae = params["w_enc"].shape
         except Exception as e:
-            raise RuntimeError(f"Failed to load SAE parameters from {path_to_params}: {e}")
+            # Cache file may be corrupted - try force re-download
+            print(f"Cached SAE file corrupted, re-downloading: {e}")
+            path_to_params = hf_hub_download(
+                repo_id=runtime_config.sae_repo,
+                filename=sae_filename,
+                force_download=True,
+            )
+            try:
+                params = load_file(path_to_params, device="cpu")
+                d_model, d_sae = params["w_enc"].shape
+            except Exception as e2:
+                raise RuntimeError(f"Failed to load SAE parameters from {path_to_params}: {e2}")
 
         sae = JumpReLUSAE(d_model, d_sae)
         sae.load_state_dict(params)
@@ -620,18 +632,21 @@ class ModelManager:
             if cache[layer] is not None:
                 residual_cache[layer] = cache[layer].clone()
 
-        # Process each layer SEQUENTIALLY
-        # This allows the app to work with limited VRAM (LLM + 1 SAE)
-        # by loading each SAE on-demand and letting LRU eviction free space
+        # Process each layer SEQUENTIALLY with immediate unload
+        # This ensures only one SAE is in VRAM at a time, allowing analysis
+        # even when VRAM is tight (model + 1 SAE must fit)
+        runtime_config = get_runtime_config()
         layer_results = {}
-        for layer in layers:
+        num_layers = len(layers)
+
+        for idx, layer in enumerate(layers):
             if layer not in residual_cache:
                 print(f"Warning: No cached residual for layer {layer}, skipping")
                 continue
 
             residual = residual_cache[layer]  # [1, seq_len, d_model]
 
-            # Load SAE for this layer (LRU eviction will free space if needed)
+            # Load SAE for this layer
             try:
                 self.load_sae_for_layer(layer)
             except MemoryError as e:
@@ -667,6 +682,16 @@ class ModelManager:
                 })
 
             layer_results[layer] = token_activations
+
+            # Unload SAE after encoding to free VRAM for next layer
+            # For multi-layer analysis: always unload to ensure next layer can load
+            # For single layer: respect memory_saver_mode setting
+            is_last_layer = (idx == num_layers - 1)
+            should_unload = (num_layers > 1) or runtime_config.memory_saver_mode
+
+            if should_unload and (not is_last_layer or runtime_config.memory_saver_mode):
+                self._sae_registry.unload_layer(layer)
+                print(f"Unloaded SAE for layer {layer} (freeing VRAM for next operation)")
 
         # Clean up residual cache
         del residual_cache
@@ -766,10 +791,19 @@ class ModelManager:
             "Please inspect the model structure and update _find_layers()."
         )
 
-    def _get_target_layer(self):
-        """Get the target layer module for single-SAE operations."""
-        runtime_config = get_runtime_config()
-        layer_idx = runtime_config.get_default_layer()
+    def _get_target_layer(self, layer_idx: int | None = None):
+        """
+        Get the target layer module for SAE operations.
+
+        Args:
+            layer_idx: Specific layer index. If None, uses default layer.
+
+        Returns:
+            The transformer layer module at the specified index.
+        """
+        if layer_idx is None:
+            runtime_config = get_runtime_config()
+            layer_idx = runtime_config.get_default_layer()
 
         layers = self._find_layers()
         if layer_idx >= len(layers):

@@ -166,6 +166,9 @@ def generate_streaming(
     """
     Generate text with streaming output and norm preservation.
 
+    Supports multi-layer steering: features can specify different layers,
+    and SAEs are loaded for each required layer.
+
     Args:
         prompt: Input prompt
         steering_features: Features to steer
@@ -188,21 +191,30 @@ def generate_streaming(
     model = manager.model
     tokenizer = manager.tokenizer
     device = settings.device
-
-    # Load SAE for the default layer if not already loaded
-    # This is needed for steering which requires an SAE
     default_layer = runtime_config.get_default_layer()
-    try:
-        manager.load_sae_for_layer(default_layer)
-    except MemoryError as e:
-        # If we can't load SAE due to memory, proceed without steering
-        print(f"Warning: Could not load SAE for steering: {e}")
 
-    # Get SAE (may be None if loading failed)
-    try:
-        sae = manager.sae
-    except RuntimeError:
-        sae = None  # Proceed without SAE/steering if not available
+    # Group steering features by layer
+    # Features without explicit layer use the default layer
+    features_by_layer: dict[int, list[SteeringFeature]] = {}
+    for sf in steering_features:
+        layer = sf.layer if sf.layer is not None else default_layer
+        if layer not in features_by_layer:
+            features_by_layer[layer] = []
+        features_by_layer[layer].append(sf)
+
+    # Load SAEs for all required layers
+    # This ensures SAEs are available even if memory_saver_mode unloaded them
+    layer_saes: dict[int, object] = {}
+    for layer in features_by_layer.keys():
+        try:
+            manager.load_sae_for_layer(layer)
+            sae = manager.get_sae_for_layer(layer)
+            if sae is not None:
+                layer_saes[layer] = sae
+            else:
+                print(f"Warning: SAE for layer {layer} not available after load")
+        except MemoryError as e:
+            print(f"Warning: Could not load SAE for layer {layer}: {e}")
 
     # Apply chat template for Gemma model
     messages = [{"role": "user", "content": prompt}]
@@ -229,15 +241,20 @@ def generate_streaming(
     if end_of_turn_ids:
         stop_token_ids.add(end_of_turn_ids[0])
 
-    # Set up steering hooks if features provided
+    # Set up steering hooks for each layer with features
     hooks = []
-    if steering_features:
-        target_layer = manager._get_target_layer()
+    for layer, features in features_by_layer.items():
+        if layer not in layer_saes:
+            print(f"Skipping steering for layer {layer}: SAE not loaded")
+            continue
+
+        sae = layer_saes[layer]
+        target_layer = manager._get_target_layer(layer)
 
         # Create steering hook with norm preservation
         hook_fn = create_steering_hook(
             sae=sae,
-            features=steering_features,
+            features=features,
             normalization=normalization,
             norm_clamp_factor=norm_clamp_factor,
             unit_normalize=unit_normalize,

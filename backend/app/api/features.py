@@ -117,6 +117,7 @@ async def configure_model(request: ConfigureModelRequest):
         sae_width=request.sae_width,
         sae_l0=request.sae_l0,
         sae_type=request.sae_type,
+        memory_saver_mode=request.memory_saver_mode,
     )
 
     # If model name changed and model was loaded, unload it

@@ -174,6 +174,10 @@ class RuntimeConfig:
         self.sae_type: str = settings.sae_type
         self._previous_model_name: str = settings.model_name
 
+        # Memory saver mode: unload SAEs immediately after feature encoding
+        # Reduces VRAM usage but requires reload for steering
+        self.memory_saver_mode: bool = False
+
         # Initialize model-specific config
         self._update_model_config()
 
@@ -216,6 +220,7 @@ class RuntimeConfig:
         sae_width: str | None = None,
         sae_l0: str | None = None,
         sae_type: str | None = None,
+        memory_saver_mode: bool | None = None,
     ) -> bool:
         """
         Update runtime configuration.
@@ -237,6 +242,8 @@ class RuntimeConfig:
             self.sae_l0 = sae_l0
         if sae_type is not None:
             self.sae_type = sae_type
+        if memory_saver_mode is not None:
+            self.memory_saver_mode = memory_saver_mode
 
         return self._previous_model_name != self.model_name
 
@@ -259,6 +266,7 @@ class RuntimeConfig:
             "sae_type": self.sae_type,
             "available_layers": self.available_layers,
             "neuronpedia_model_id": self.neuronpedia_model_id,
+            "memory_saver_mode": self.memory_saver_mode,
         }
 
 

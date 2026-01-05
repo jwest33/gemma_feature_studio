@@ -10,6 +10,20 @@ if TYPE_CHECKING:
     from app.inference.vram_monitor import VRAMMonitor
 
 
+def _free_sae_vram(sae: "torch.nn.Module") -> None:
+    """
+    Properly free SAE VRAM by moving tensors to CPU before deletion.
+
+    Simply calling `del sae` doesn't immediately free CUDA memory.
+    Moving to CPU first ensures the GPU memory is released.
+    """
+    try:
+        sae.cpu()  # Move all parameters to CPU, freeing GPU memory
+    except Exception:
+        pass  # If already on CPU or other issue, continue
+    del sae
+
+
 @dataclass
 class SAEEntry:
     """Represents a loaded SAE with metadata."""
@@ -185,7 +199,7 @@ class SAERegistry:
         if key in self._saes:
             entry = self._saes.pop(key)
             self._total_loaded_bytes -= entry.size_bytes
-            del entry.sae
+            _free_sae_vram(entry.sae)
             torch.cuda.empty_cache()
             return True
         return False
@@ -208,7 +222,7 @@ class SAERegistry:
         for key in keys_to_remove:
             entry = self._saes.pop(key)
             self._total_loaded_bytes -= entry.size_bytes
-            del entry.sae
+            _free_sae_vram(entry.sae)
 
         if keys_to_remove:
             torch.cuda.empty_cache()
@@ -239,7 +253,7 @@ class SAERegistry:
             entry = self._saes.pop(key)
             self._total_loaded_bytes -= entry.size_bytes
             print(f"Evicted SAE: {entry.sae_id} ({entry.size_bytes / (1024**2):.1f}MB)")
-            del entry.sae
+            _free_sae_vram(entry.sae)
 
         if to_evict:
             torch.cuda.empty_cache()
@@ -275,7 +289,7 @@ class SAERegistry:
     def clear_all(self) -> None:
         """Unload all SAEs."""
         for entry in self._saes.values():
-            del entry.sae
+            _free_sae_vram(entry.sae)
         self._saes.clear()
         self._total_loaded_bytes = 0
         torch.cuda.empty_cache()

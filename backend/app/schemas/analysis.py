@@ -295,6 +295,11 @@ class ConfigureModelRequest(BaseModel):
     sae_width: str = Field(default="65k", description="SAE width (16k, 65k, 262k, 1m)")
     sae_l0: str = Field(default="medium", description="L0 regularization level")
     sae_type: str = Field(default="resid_post", description="SAE hook type")
+    memory_saver_mode: bool | None = Field(
+        default=None,
+        description="If true, unload SAEs immediately after encoding to save VRAM. "
+                    "SAEs will be reloaded automatically when needed for steering."
+    )
 
 
 class ConfigureModelResponse(BaseModel):
