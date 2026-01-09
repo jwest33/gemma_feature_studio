@@ -81,7 +81,8 @@ async def load_model():
     """Explicitly load the model and SAE."""
     manager = get_model_manager()
     try:
-        manager.load_model()
+        # Run blocking model load in thread pool to not block event loop
+        await asyncio.to_thread(manager.load_model)
         return {"status": "loaded", "message": "Model and SAE loaded successfully"}
     except Exception as e:
         print(f"Failed to load model: {e}", flush=True)
@@ -168,7 +169,9 @@ async def analyze(request: AnalyzeRequest):
     Returns per-token feature activations with top-K active features.
     """
     try:
-        result = analyze_prompt(
+        # Run blocking analysis in thread pool to not block event loop
+        result = await asyncio.to_thread(
+            analyze_prompt,
             prompt=request.prompt,
             top_k=request.top_k,
             include_bos=request.include_bos,
@@ -342,13 +345,15 @@ async def load_saes(request: LoadSAERequest):
     # Ensure model is loaded first
     if not manager.is_loaded:
         try:
-            manager.load_model()
+            # Run blocking model load in thread pool to not block event loop
+            await asyncio.to_thread(manager.load_model)
         except Exception as e:
             logger.error(f"Failed to load model: {e}")
             raise HTTPException(status_code=500, detail=f"Failed to load model: {str(e)}")
 
     try:
-        result = manager.load_saes_for_layers(request.layers, request.width)
+        # Run blocking SAE load in thread pool to not block event loop
+        result = await asyncio.to_thread(manager.load_saes_for_layers, request.layers, request.width)
         return LoadSAEResponse(
             loaded=result["loaded"],
             already_loaded=result["already_loaded"],
@@ -407,7 +412,8 @@ async def download_saes(request: SAEDownloadRequest):
     runtime_config = get_runtime_config()
 
     try:
-        result = manager.download_sae_files(request.layers)
+        # Run blocking download in thread pool to not block event loop
+        result = await asyncio.to_thread(manager.download_sae_files, request.layers)
 
         return SAEDownloadResponse(
             downloaded=result["downloaded"],
@@ -438,14 +444,16 @@ async def analyze_multi_layer(request: MultiLayerAnalyzeRequest):
     # Ensure model is loaded
     if not manager.is_loaded:
         try:
-            manager.load_model()
+            # Run blocking model load in thread pool to not block event loop
+            await asyncio.to_thread(manager.load_model)
         except Exception as e:
             logger.error(f"Failed to load model: {e}")
             raise HTTPException(status_code=500, detail=f"Failed to load model: {str(e)}")
 
     try:
-        # Get multi-layer activations
-        result = manager.get_feature_activations_multi(
+        # Run blocking analysis in thread pool to not block event loop
+        result = await asyncio.to_thread(
+            manager.get_feature_activations_multi,
             text=request.prompt,
             layers=request.layers,
             top_k=request.top_k,
@@ -515,7 +523,8 @@ async def analyze_batch(request: BatchAnalyzeRequest):
     # Ensure model is loaded
     if not manager.is_loaded:
         try:
-            manager.load_model()
+            # Run blocking model load in thread pool to not block event loop
+            await asyncio.to_thread(manager.load_model)
         except Exception as e:
             logger.error(f"Failed to load model: {e}")
             raise HTTPException(status_code=500, detail=f"Failed to load model: {str(e)}")
@@ -609,7 +618,8 @@ async def analyze_batch_stream(request: BatchAnalyzeRequest):
     # Ensure model is loaded
     if not manager.is_loaded:
         try:
-            manager.load_model()
+            # Run blocking model load in thread pool to not block event loop
+            await asyncio.to_thread(manager.load_model)
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Failed to load model: {str(e)}")
 
