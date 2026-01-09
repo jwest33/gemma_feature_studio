@@ -311,3 +311,46 @@ class ConfigureModelResponse(BaseModel):
         default=False,
         description="Whether model needs to be reloaded for changes to take effect"
     )
+
+
+# ============================================================================
+# SAE Cache Status Schemas
+# ============================================================================
+
+class SAECacheStatusRequest(BaseModel):
+    """Request to check SAE disk cache status."""
+    layers: list[int] = Field(..., description="Layers to check cache status for")
+
+
+class SAELayerCacheStatus(BaseModel):
+    """Cache status for a single SAE layer."""
+    layer: int = Field(..., description="Layer index")
+    cached: bool = Field(..., description="Whether the SAE is cached on disk")
+    filename: str = Field(..., description="SAE filename in the repo")
+
+
+class SAECacheStatusResponse(BaseModel):
+    """Response with SAE disk cache status."""
+    layers: list[SAELayerCacheStatus] = Field(..., description="Cache status per layer")
+    all_cached: bool = Field(..., description="Whether all requested layers are cached")
+    uncached_count: int = Field(..., description="Number of uncached layers")
+    sae_repo: str = Field(..., description="SAE repository being checked")
+
+
+class SAEDownloadRequest(BaseModel):
+    """Request to download SAE files to local cache."""
+    layers: list[int] = Field(..., description="Layers to download SAEs for")
+
+
+class SAEDownloadFailure(BaseModel):
+    """Details of a failed SAE download."""
+    layer: int = Field(..., description="Layer that failed to download")
+    error: str = Field(..., description="Error message")
+
+
+class SAEDownloadResponse(BaseModel):
+    """Response after downloading SAE files."""
+    downloaded: list[int] = Field(..., description="Layers successfully downloaded")
+    already_cached: list[int] = Field(..., description="Layers that were already cached")
+    failed: list[SAEDownloadFailure] = Field(default=[], description="Layers that failed to download")
+    sae_repo: str = Field(..., description="SAE repository")

@@ -266,6 +266,30 @@ export interface UnloadSAEResponse {
 }
 
 // ============================================================================
+// SAE Cache Status Types
+// ============================================================================
+
+export interface SAELayerCacheStatus {
+  layer: number;
+  cached: boolean;
+  filename: string;
+}
+
+export interface SAECacheStatusResponse {
+  layers: SAELayerCacheStatus[];
+  all_cached: boolean;
+  uncached_count: number;
+  sae_repo: string;
+}
+
+export interface SAEDownloadResponse {
+  downloaded: number[];
+  already_cached: number[];
+  failed: Array<{ layer: number; error: string }>;
+  sae_repo: string;
+}
+
+// ============================================================================
 // Flow Store Types
 // ============================================================================
 

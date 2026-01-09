@@ -25,6 +25,8 @@ import type {
   UnloadSAEResponse,
   ConfigureModelRequest,
   ConfigureModelResponse,
+  SAECacheStatusResponse,
+  SAEDownloadResponse,
 } from "@/types/flow";
 
 const API_BASE = "/api";
@@ -181,6 +183,24 @@ export async function unloadSAE(request: UnloadSAERequest): Promise<UnloadSAERes
   return fetchJson<UnloadSAEResponse>("/sae/unload", {
     method: "POST",
     body: JSON.stringify(request),
+  });
+}
+
+export async function getSAECacheStatus(
+  layers: number[]
+): Promise<SAECacheStatusResponse> {
+  return fetchJson<SAECacheStatusResponse>("/sae/cache/status", {
+    method: "POST",
+    body: JSON.stringify({ layers }),
+  });
+}
+
+export async function downloadSAEs(
+  layers: number[]
+): Promise<SAEDownloadResponse> {
+  return fetchJson<SAEDownloadResponse>("/sae/download", {
+    method: "POST",
+    body: JSON.stringify({ layers }),
   });
 }
 

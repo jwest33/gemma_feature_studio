@@ -46,6 +46,13 @@ from app.schemas.analysis import (
     # Model configuration
     ConfigureModelRequest,
     ConfigureModelResponse,
+    # SAE cache status
+    SAECacheStatusRequest,
+    SAECacheStatusResponse,
+    SAELayerCacheStatus,
+    SAEDownloadRequest,
+    SAEDownloadResponse,
+    SAEDownloadFailure,
 )
 from app.inference.analysis import analyze_prompt
 from app.inference.steering import (
@@ -364,6 +371,54 @@ async def unload_sae(request: UnloadSAERequest):
         layer=request.layer,
         vram_status=VRAMStatus(**manager.get_vram_status()),
     )
+
+
+@router.post("/sae/cache/status", response_model=SAECacheStatusResponse)
+async def get_sae_cache_status(request: SAECacheStatusRequest):
+    """Check if SAE files are cached locally in HuggingFace cache.
+
+    This checks disk cache, not VRAM. Use /sae/loaded to check VRAM status.
+    """
+    manager = get_model_manager()
+    runtime_config = get_runtime_config()
+
+    try:
+        cache_status = manager.get_sae_cache_status(request.layers)
+        uncached = [s for s in cache_status if not s["cached"]]
+
+        return SAECacheStatusResponse(
+            layers=[SAELayerCacheStatus(**s) for s in cache_status],
+            all_cached=len(uncached) == 0,
+            uncached_count=len(uncached),
+            sae_repo=runtime_config.sae_repo,
+        )
+    except Exception as e:
+        logger.error(f"Failed to check SAE cache status: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/sae/download", response_model=SAEDownloadResponse)
+async def download_saes(request: SAEDownloadRequest):
+    """Download SAE files to local HuggingFace cache without loading to GPU.
+
+    Use this to pre-download SAEs before analysis.
+    """
+    manager = get_model_manager()
+    runtime_config = get_runtime_config()
+
+    try:
+        result = manager.download_sae_files(request.layers)
+
+        return SAEDownloadResponse(
+            downloaded=result["downloaded"],
+            already_cached=result["already_cached"],
+            failed=[SAEDownloadFailure(**f) for f in result["failed"]],
+            sae_repo=runtime_config.sae_repo,
+        )
+    except Exception as e:
+        logger.error(f"Failed to download SAEs: {e}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # =============================================================================

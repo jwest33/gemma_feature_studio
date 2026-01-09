@@ -3,13 +3,42 @@ import torch.nn as nn
 from typing import Optional
 from functools import lru_cache
 from contextlib import contextmanager
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 
 from transformers import AutoModelForCausalLM, AutoTokenizer
-from huggingface_hub import hf_hub_download
+from huggingface_hub import hf_hub_download, try_to_load_from_cache
 from safetensors.torch import load_file
 from app.core.config import get_settings, get_runtime_config
 from app.inference.vram_monitor import VRAMMonitor
 from app.inference.sae_registry import SAERegistry, SAEEntry
+
+
+# Download timeout in seconds (5 minutes for large SAE files)
+SAE_DOWNLOAD_TIMEOUT = 300
+
+
+def _download_with_timeout(
+    repo_id: str,
+    filename: str,
+    timeout: int = SAE_DOWNLOAD_TIMEOUT,
+    force_download: bool = False
+) -> str:
+    """Download a file from HuggingFace with a timeout to prevent indefinite hangs."""
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(
+            hf_hub_download,
+            repo_id=repo_id,
+            filename=filename,
+            force_download=force_download
+        )
+        try:
+            return future.result(timeout=timeout)
+        except FuturesTimeoutError:
+            raise TimeoutError(
+                f"SAE download timed out after {timeout}s. "
+                f"The file may be large or your connection slow. "
+                f"Try running: curl -L https://huggingface.co/{repo_id}/resolve/main/{filename} -o sae.safetensors"
+            )
 
 
 def get_available_layers() -> list[int]:
@@ -430,11 +459,22 @@ class ModelManager:
         sae_filename = f"{sae_subdir}/params.safetensors"
 
         print(f"Loading SAE: {runtime_config.sae_repo}/{sae_filename}")
-        path_to_params = hf_hub_download(
+
+        # Check cache first to avoid lock contention on Windows
+        path_to_params = try_to_load_from_cache(
             repo_id=runtime_config.sae_repo,
             filename=sae_filename,
-            local_files_only=True,
         )
+
+        if path_to_params is None:
+            # Not cached, need to download (with timeout to prevent hangs)
+            print(f"SAE not in cache, downloading (timeout: {SAE_DOWNLOAD_TIMEOUT}s)...")
+            path_to_params = _download_with_timeout(
+                repo_id=runtime_config.sae_repo,
+                filename=sae_filename,
+            )
+        else:
+            print(f"SAE found in cache: {path_to_params}")
 
         # Load SAE to CPU first to avoid OOM crash, then transfer to GPU
         # This allows proper error handling if GPU transfer fails
@@ -444,7 +484,7 @@ class ModelManager:
         except Exception as e:
             # Cache file may be corrupted - try force re-download
             print(f"Cached SAE file corrupted, re-downloading: {e}")
-            path_to_params = hf_hub_download(
+            path_to_params = _download_with_timeout(
                 repo_id=runtime_config.sae_repo,
                 filename=sae_filename,
                 force_download=True,
@@ -546,6 +586,82 @@ class ModelManager:
     def get_loaded_layers(self) -> list[int]:
         """Get list of currently loaded layer indices."""
         return self._sae_registry.get_loaded_layers()
+
+    def get_sae_cache_status(self, layers: list[int]) -> list[dict]:
+        """Check which SAE files are cached in HuggingFace local cache.
+
+        This checks the disk cache, not whether SAEs are loaded in VRAM.
+
+        Args:
+            layers: List of layer indices to check
+
+        Returns:
+            List of dicts with {layer, cached, filename} for each layer
+        """
+        runtime_config = get_runtime_config()
+        results = []
+
+        for layer in layers:
+            sae_subdir = f"{runtime_config.sae_type}/layer_{layer}_width_{runtime_config.sae_width}_l0_{runtime_config.sae_l0}"
+            sae_filename = f"{sae_subdir}/params.safetensors"
+
+            cached_path = try_to_load_from_cache(
+                repo_id=runtime_config.sae_repo,
+                filename=sae_filename
+            )
+
+            results.append({
+                "layer": layer,
+                "cached": cached_path is not None,
+                "filename": sae_filename,
+            })
+
+        return results
+
+    def download_sae_files(self, layers: list[int]) -> dict:
+        """Download SAE files to HuggingFace cache without loading to GPU.
+
+        Args:
+            layers: List of layer indices to download
+
+        Returns:
+            Dict with {downloaded: list[int], already_cached: list[int], failed: list[dict]}
+        """
+        runtime_config = get_runtime_config()
+        downloaded = []
+        already_cached = []
+        failed = []
+
+        for layer in layers:
+            sae_subdir = f"{runtime_config.sae_type}/layer_{layer}_width_{runtime_config.sae_width}_l0_{runtime_config.sae_l0}"
+            sae_filename = f"{sae_subdir}/params.safetensors"
+
+            # Check if already cached
+            cached_path = try_to_load_from_cache(
+                repo_id=runtime_config.sae_repo,
+                filename=sae_filename
+            )
+
+            if cached_path is not None:
+                already_cached.append(layer)
+                continue
+
+            # Download the file (with timeout to prevent hangs)
+            try:
+                print(f"Downloading SAE for layer {layer}: {runtime_config.sae_repo}/{sae_filename}")
+                _download_with_timeout(
+                    repo_id=runtime_config.sae_repo,
+                    filename=sae_filename,
+                )
+                downloaded.append(layer)
+            except Exception as e:
+                failed.append({"layer": layer, "error": str(e)})
+
+        return {
+            "downloaded": downloaded,
+            "already_cached": already_cached,
+            "failed": failed,
+        }
 
     # =========================================================================
     # Multi-Layer Activation Capture

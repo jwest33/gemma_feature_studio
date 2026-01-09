@@ -83,6 +83,11 @@ interface FlowState {
   systemStatus: SystemStatus | null;
   isLoadingStatus: boolean;
 
+  // SAE Cache Status
+  saeCacheStatus: Record<number, boolean>;  // layer -> cached on disk
+  isCheckingCache: boolean;
+  isDownloadingSAEs: boolean;
+
   // Analysis State
   isAnalyzing: boolean;
   analysisProgress: { current: number; total: number } | null;
@@ -119,6 +124,11 @@ interface FlowState {
   // Actions - System Status
   setSystemStatus: (status: SystemStatus | null) => void;
   setLoadingStatus: (loading: boolean) => void;
+
+  // Actions - SAE Cache
+  setSAECacheStatus: (status: Record<number, boolean>) => void;
+  setIsCheckingCache: (checking: boolean) => void;
+  setIsDownloadingSAEs: (downloading: boolean) => void;
 
   // Actions - Analysis
   setAnalyzing: (analyzing: boolean) => void;
@@ -211,6 +221,11 @@ export const useFlowStore = create<FlowState>()(
       // System Status
       systemStatus: null,
       isLoadingStatus: false,
+      // SAE Cache Status
+      saeCacheStatus: {},
+      isCheckingCache: false,
+      isDownloadingSAEs: false,
+      // Analysis
       isAnalyzing: false,
       analysisProgress: null,
       analysisError: null,
@@ -416,6 +431,22 @@ export const useFlowStore = create<FlowState>()(
 
       setLoadingStatus: (loading: boolean) => {
         set({ isLoadingStatus: loading });
+      },
+
+      // ======================================================================
+      // SAE Cache Actions
+      // ======================================================================
+
+      setSAECacheStatus: (status: Record<number, boolean>) => {
+        set({ saeCacheStatus: status });
+      },
+
+      setIsCheckingCache: (checking: boolean) => {
+        set({ isCheckingCache: checking });
+      },
+
+      setIsDownloadingSAEs: (downloading: boolean) => {
+        set({ isDownloadingSAEs: downloading });
       },
 
       // ======================================================================
