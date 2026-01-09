@@ -10,7 +10,7 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeou
 # These environment variables control connection timeouts and behavior
 os.environ.setdefault("HF_HUB_DOWNLOAD_TIMEOUT", "60")  # 60s connection timeout
 os.environ.setdefault("HF_HUB_ENABLE_HF_TRANSFER", "0")  # Disable hf_transfer (can cause issues on Windows)
-os.environ.setdefault("HUGGINGFACE_HUB_CACHE", os.environ.get("HF_HOME", ""))  # Use default cache
+# Note: Don't set HUGGINGFACE_HUB_CACHE - let huggingface_hub use its default cache location
 
 import torch
 import torch.nn as nn
