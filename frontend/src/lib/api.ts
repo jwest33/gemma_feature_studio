@@ -57,7 +57,21 @@ export async function checkHealth(): Promise<HealthStatus> {
 }
 
 export async function loadModel(): Promise<{ status: string; message: string }> {
-  return fetchJson("/load", { method: "POST" });
+  // Use direct backend URL to bypass Next.js proxy timeout
+  // Model loading can take several minutes for large models
+  const response = await fetch(`${BACKEND_DIRECT}/load`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+  });
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({}));
+    throw new Error(error.detail || `API error: ${response.status}`);
+  }
+
+  return response.json();
 }
 
 export async function unloadModel(): Promise<{ status: string; message: string }> {
@@ -173,10 +187,22 @@ export async function getLoadedSAEs(): Promise<{
 }
 
 export async function loadSAEs(request: LoadSAERequest): Promise<LoadSAEResponse> {
-  return fetchJson<LoadSAEResponse>("/sae/load", {
+  // Use direct backend URL to bypass Next.js proxy timeout
+  // SAE loading can take time for downloads and GPU transfers
+  const response = await fetch(`${BACKEND_DIRECT}/sae/load`, {
     method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
     body: JSON.stringify(request),
   });
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({}));
+    throw new Error(error.detail || `API error: ${response.status}`);
+  }
+
+  return response.json();
 }
 
 export async function unloadSAE(request: UnloadSAERequest): Promise<UnloadSAEResponse> {
@@ -198,10 +224,22 @@ export async function getSAECacheStatus(
 export async function downloadSAEs(
   layers: number[]
 ): Promise<SAEDownloadResponse> {
-  return fetchJson<SAEDownloadResponse>("/sae/download", {
+  // Use direct backend URL to bypass Next.js proxy timeout
+  // SAE downloads can take several minutes for large files
+  const response = await fetch(`${BACKEND_DIRECT}/sae/download`, {
     method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
     body: JSON.stringify({ layers }),
   });
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({}));
+    throw new Error(error.detail || `API error: ${response.status}`);
+  }
+
+  return response.json();
 }
 
 // =============================================================================
@@ -211,10 +249,22 @@ export async function downloadSAEs(
 export async function analyzeMultiLayer(
   request: MultiLayerAnalyzeRequest
 ): Promise<MultiLayerAnalyzeResponse> {
-  return fetchJson<MultiLayerAnalyzeResponse>("/analyze/multi-layer", {
+  // Use direct backend URL to bypass Next.js proxy timeout
+  // Multi-layer analysis involves loading SAEs and can take time
+  const response = await fetch(`${BACKEND_DIRECT}/analyze/multi-layer`, {
     method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
     body: JSON.stringify(request),
   });
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({}));
+    throw new Error(error.detail || `API error: ${response.status}`);
+  }
+
+  return response.json();
 }
 
 // =============================================================================
@@ -307,10 +357,22 @@ export async function getNeuronpediaFeature(
 export async function configureModel(
   request: ConfigureModelRequest
 ): Promise<ConfigureModelResponse> {
-  return fetchJson<ConfigureModelResponse>("/config", {
+  // Use direct backend URL to bypass Next.js proxy timeout
+  // Config changes can trigger model unload/reload
+  const response = await fetch(`${BACKEND_DIRECT}/config`, {
     method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
     body: JSON.stringify(request),
   });
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({}));
+    throw new Error(error.detail || `API error: ${response.status}`);
+  }
+
+  return response.json();
 }
 
 export async function getConfig(): Promise<{

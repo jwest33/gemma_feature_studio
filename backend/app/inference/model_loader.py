@@ -1,10 +1,19 @@
-import torch
-import torch.nn as nn
+import os
+import time
+from pathlib import Path
 from typing import Optional
 from functools import lru_cache
 from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 
+# Configure HuggingFace Hub BEFORE importing it
+# These environment variables control connection timeouts and behavior
+os.environ.setdefault("HF_HUB_DOWNLOAD_TIMEOUT", "60")  # 60s connection timeout
+os.environ.setdefault("HF_HUB_ENABLE_HF_TRANSFER", "0")  # Disable hf_transfer (can cause issues on Windows)
+os.environ.setdefault("HUGGINGFACE_HUB_CACHE", os.environ.get("HF_HOME", ""))  # Use default cache
+
+import torch
+import torch.nn as nn
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from huggingface_hub import hf_hub_download, try_to_load_from_cache
 from safetensors.torch import load_file
@@ -13,32 +22,103 @@ from app.inference.vram_monitor import VRAMMonitor
 from app.inference.sae_registry import SAERegistry, SAEEntry
 
 
-# Download timeout in seconds (5 minutes for large SAE files)
-SAE_DOWNLOAD_TIMEOUT = 300
+# Download timeout in seconds (2 minutes per attempt, with retries)
+SAE_DOWNLOAD_TIMEOUT = 120
+
+
+def _is_local_path(path: str) -> bool:
+    """
+    Check if the given path is a local filesystem path (not a HuggingFace model ID).
+
+    Returns True if:
+    - Path contains directory separators (/ or \\)
+    - Path exists as a directory on the filesystem
+    - Path starts with a drive letter (Windows) or / (Unix)
+    """
+    # Normalize path separators for cross-platform compatibility
+    normalized = path.replace("\\", "/")
+
+    # Check for obvious local path patterns
+    # Windows: D:/models/... or D:\models\...
+    # Unix: /home/user/models/...
+    has_path_sep = "/" in normalized or "\\" in path
+    starts_with_drive = len(path) >= 2 and path[1] == ":"  # Windows drive letter
+    starts_with_slash = path.startswith("/")  # Unix absolute path
+
+    # If it looks like a path, verify the directory exists
+    if has_path_sep or starts_with_drive or starts_with_slash:
+        try:
+            return Path(path).exists() and Path(path).is_dir()
+        except (OSError, ValueError):
+            # Invalid path characters or other issues
+            return False
+
+    # Otherwise, assume it's a HuggingFace model ID (e.g., "google/gemma-3-4b-it")
+    return False
 
 
 def _download_with_timeout(
     repo_id: str,
     filename: str,
     timeout: int = SAE_DOWNLOAD_TIMEOUT,
-    force_download: bool = False
+    force_download: bool = False,
+    max_retries: int = 3,
 ) -> str:
-    """Download a file from HuggingFace with a timeout to prevent indefinite hangs."""
-    with ThreadPoolExecutor(max_workers=1) as executor:
-        future = executor.submit(
-            hf_hub_download,
-            repo_id=repo_id,
-            filename=filename,
-            force_download=force_download
-        )
+    """Download a file from HuggingFace with timeout and retry logic.
+
+    Uses retry logic to handle transient network issues common on Windows.
+    Each retry uses a fresh thread to avoid connection reuse issues.
+    """
+    last_error = None
+
+    for attempt in range(max_retries):
         try:
-            return future.result(timeout=timeout)
-        except FuturesTimeoutError:
-            raise TimeoutError(
-                f"SAE download timed out after {timeout}s. "
-                f"The file may be large or your connection slow. "
-                f"Try running: curl -L https://huggingface.co/{repo_id}/resolve/main/{filename} -o sae.safetensors"
-            )
+            print(f"Download attempt {attempt + 1}/{max_retries} for {filename}...")
+
+            # Use a fresh executor for each attempt to avoid connection reuse issues
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(
+                    hf_hub_download,
+                    repo_id=repo_id,
+                    filename=filename,
+                    force_download=force_download,
+                    resume_download=True,  # Resume partial downloads
+                )
+                try:
+                    result = future.result(timeout=timeout)
+                    print(f"Download successful: {filename}")
+                    return result
+                except FuturesTimeoutError:
+                    last_error = TimeoutError(
+                        f"Download timed out after {timeout}s on attempt {attempt + 1}"
+                    )
+                    print(f"Download timeout on attempt {attempt + 1}, will retry...")
+                    # Cancel the future (though this may not stop the underlying download)
+                    future.cancel()
+        except Exception as e:
+            last_error = e
+            print(f"Download error on attempt {attempt + 1}: {e}")
+
+            # Don't retry on certain errors
+            error_str = str(e).lower()
+            if "not found" in error_str or "404" in error_str:
+                raise  # File doesn't exist, no point retrying
+            if "unauthorized" in error_str or "403" in error_str:
+                raise  # Auth error, no point retrying
+
+        # Wait before retry (exponential backoff)
+        if attempt < max_retries - 1:
+            wait_time = 2 ** attempt  # 1s, 2s, 4s
+            print(f"Waiting {wait_time}s before retry...")
+            time.sleep(wait_time)
+
+    # All retries exhausted
+    raise TimeoutError(
+        f"SAE download failed after {max_retries} attempts. "
+        f"Last error: {last_error}. "
+        f"The file may be large or your connection unstable. "
+        f"Try downloading manually: curl -L https://huggingface.co/{repo_id}/resolve/main/{filename} -o sae.safetensors"
+    )
 
 
 def get_available_layers() -> list[int]:
@@ -156,6 +236,10 @@ class ModelManager:
 
         SAEs are loaded on-demand via load_sae_for_layer() to minimize VRAM usage.
         This is especially important for larger models (12B, 27B) where VRAM is tight.
+
+        Supports both HuggingFace model IDs (e.g., "google/gemma-3-4b-it") and
+        local paths (e.g., "D:/models/gemma-3-4b-it"). Local paths are detected
+        automatically and loaded with local_files_only=True to prevent network calls.
         """
         if self._initialized and not force_reload:
             return
@@ -168,8 +252,19 @@ class ModelManager:
         # Use runtime config for model name (allows dynamic changes)
         model_name = runtime_config.model_name
 
+        # Check if this is a local path - if so, use local_files_only to prevent
+        # any network calls that cause socket hangups and caching errors
+        is_local = _is_local_path(model_name)
+        if is_local:
+            print(f"Detected local model path: {model_name}")
+            print("Using local_files_only=True to prevent network calls")
+
         print(f"Loading tokenizer: {model_name}")
-        self._tokenizer = AutoTokenizer.from_pretrained(model_name)
+        self._tokenizer = AutoTokenizer.from_pretrained(
+            model_name,
+            local_files_only=is_local,
+            trust_remote_code=True,
+        )
 
         print(f"Loading model: {model_name}")
         self._model = AutoModelForCausalLM.from_pretrained(
@@ -177,6 +272,7 @@ class ModelManager:
             torch_dtype=dtype,
             device_map=device,
             trust_remote_code=True,
+            local_files_only=is_local,
         )
         self._model.eval()
 
